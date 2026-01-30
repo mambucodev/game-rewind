@@ -1,0 +1,41 @@
+# Build directories
+build/
+build-*/
+cmake-build-*/
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+
+# Compiled objects and binaries
+*.o
+*.so
+*.a
+game-rewind
+
+# Qt generated files
+*.autosave
+*.user
+*.qmlc
+*.jsc
+moc_*.cpp
+ui_*.h
+qrc_*.cpp
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Clangd cache
+.cache/
+
+# compile_commands.json is a symlink to build/
+compile_commands.json
+
+# Testing artifacts
+test-backups/
