@@ -35,9 +35,10 @@ sudo make install
 src/
   main.cpp                  -- Application entry point
   core/                     -- Data types, database, backup logic
-    gameinfo.{h,cpp}        -- GameInfo and BackupInfo structs
-    database.{h,cpp}        -- SQLite database (custom games, hidden games)
+    gameinfo.{h,cpp}        -- GameInfo, BackupInfo, SaveProfile structs
+    database.{h,cpp}        -- SQLite database (custom games, hidden games, profiles, settings)
     savemanager.{h,cpp}     -- Backup create/restore/delete via tar
+    profiledetector.{h,cpp} -- Heuristic save slot detection
   steam/                    -- Steam and game detection
     steamutils.{h,cpp}      -- Steam path detection, VDF parsing, Proton prefix lookup
     manifestmanager.{h,cpp} -- Ludusavi manifest download, caching, YAML parsing
@@ -50,6 +51,8 @@ src/
     addgamedialog.{h,cpp}   -- Dialog for adding custom games
     gameconfigdialog.{h,cpp} -- Config editor dialog (manage custom games)
     gameicon.{h,cpp}        -- Icon/capsule image provider
+    onboardingdialog.{h,cpp} -- First-launch welcome dialog
+    profiledialog.{h,cpp}   -- Save profile management dialog
 docs/
   configs/                  -- Documentation for JSON config format
 ```
@@ -89,9 +92,11 @@ docs/
 ### Database (`database.{h,cpp}`)
 
 SQLite database at `~/.local/share/game-rewind/games.db` with WAL mode:
-- `schema_version` -- tracks migration state (current: v2)
+- `schema_version` -- tracks migration state (current: v4)
 - `custom_games` -- user-added game definitions (id, name, platform, steam_app_id, save_paths as JSON)
 - `hidden_games` -- games hidden from the UI (game_id, name)
+- `app_settings` -- generic key-value store (onboarding_completed, save_path_overrides)
+- `save_profiles` -- per-game save profiles for slot-level backups (game_id, name, files as JSON)
 
 On first run, migrates legacy JSON configs from `~/.local/share/game-rewind/configs/` if they exist.
 
@@ -128,7 +133,7 @@ Custom `Qt::UserRole` values used to store data on tree widget items:
 
 ## Dependencies
 
-- **Qt6**: Core, Widgets, Network, Sql
+- **Qt6**: Core, Widgets, Network, Sql, Concurrent
 - **yaml-cpp**: Ludusavi manifest parsing
 - **System**: `tar` (must be in PATH)
 
@@ -173,3 +178,21 @@ When debugging game detection:
 - Verify Steam paths match system installation
 - Check manifest cache at `~/.local/share/game-rewind/manifest.yaml`
 - Test path expansion with different variables
+
+## Commit Workflow
+
+**Do NOT commit automatically after implementing a feature.** Always ask the user for confirmation first -- they need to test the changes before committing.
+
+### Changelog
+
+A local `CHANGELOG.md` (gitignored) tracks all changes made during development. **Every time you modify code, update CHANGELOG.md** with:
+- Feature/fix name as a heading
+- What changed and why
+- Which files were affected
+
+When the user asks to commit, use the changelog to write detailed commit messages. When preparing a release, parse the changelog into concise release notes.
+
+### Commit Message Format
+
+Use conventional commits: `feat:`, `fix:`, `refactor:`, `docs:`, `chore:`.
+For multi-feature commits, use a summary line and bullet sections in the body.

@@ -39,3 +39,6 @@ compile_commands.json
 
 # Testing artifacts
 test-backups/
+
+# Dev changelog (parsed into release notes, not tracked in git)
+CHANGELOG.md
