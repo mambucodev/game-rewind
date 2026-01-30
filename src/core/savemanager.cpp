@@ -27,7 +27,8 @@ QString SaveManager::getBackupDirectory() const
     return m_backupDir;
 }
 
-bool SaveManager::createBackup(const GameInfo &game, const QString &backupName, const QString &notes)
+bool SaveManager::createBackup(const GameInfo &game, const QString &backupName,
+                               const QString &notes, const SaveProfile &profile)
 {
     if (!game.isDetected || game.detectedSavePath.isEmpty()) {
         emit error("Game save path not detected");
@@ -48,6 +49,8 @@ bool SaveManager::createBackup(const GameInfo &game, const QString &backupName, 
     backup.gameName = game.name;
     backup.notes = notes;
     backup.timestamp = QDateTime::currentDateTime();
+    backup.profileId = profile.id;
+    backup.profileName = profile.name;
 
     if (backupName.isEmpty()) {
         backup.displayName = backup.timestamp.toString("yyyy-MM-dd HH:mm:ss");
@@ -58,7 +61,14 @@ bool SaveManager::createBackup(const GameInfo &game, const QString &backupName, 
     QString archiveName = backup.id + ".tar.gz";
     backup.archivePath = gameBackupDir + "/" + archiveName;
 
-    if (!compressDirectory(game.detectedSavePath, backup.archivePath)) {
+    bool compressed;
+    if (profile.id == -1) {
+        compressed = compressDirectory(game.detectedSavePath, backup.archivePath);
+    } else {
+        compressed = compressFiles(game.detectedSavePath, profile.files, backup.archivePath);
+    }
+
+    if (!compressed) {
         emit error("Failed to create backup archive");
         return false;
     }
@@ -82,6 +92,12 @@ bool SaveManager::restoreBackup(const BackupInfo &backup, const QString &targetP
         return false;
     }
 
+    // Profile backups: extract directly, overwriting only specific files
+    if (backup.profileId != -1) {
+        return restoreProfileBackup(backup, targetPath);
+    }
+
+    // Full directory backup: extract to temp, replace entire directory
     QString tempDir = m_backupDir + "/temp_restore_" + QString::number(QDateTime::currentMSecsSinceEpoch());
 
     if (!extractArchive(backup.archivePath, tempDir)) {
@@ -217,6 +233,63 @@ bool SaveManager::compressDirectory(const QString &sourceDir, const QString &arc
     return true;
 }
 
+bool SaveManager::compressFiles(const QString &baseDir, const QStringList &relativePaths,
+                                const QString &archivePath)
+{
+    QProcess process;
+    process.setWorkingDirectory(baseDir);
+
+    QStringList args;
+    args << "-czf" << archivePath;
+
+    for (const QString &relPath : relativePaths) {
+        QString fullPath = baseDir + "/" + relPath;
+        if (QFileInfo::exists(fullPath)) {
+            args << relPath;
+        } else {
+            qWarning() << "Profile file not found, skipping:" << fullPath;
+        }
+    }
+
+    if (args.size() <= 2) {
+        qWarning() << "No profile files found on disk";
+        return false;
+    }
+
+    process.start("tar", args);
+    process.waitForFinished(-1);
+
+    if (process.exitCode() != 0) {
+        qWarning() << "tar failed:" << process.readAllStandardError();
+        return false;
+    }
+
+    return true;
+}
+
+bool SaveManager::restoreProfileBackup(const BackupInfo &backup, const QString &targetPath)
+{
+    QDir().mkpath(targetPath);
+
+    QProcess process;
+    process.setWorkingDirectory(targetPath);
+
+    QStringList args;
+    args << "-xzf" << backup.archivePath;
+
+    process.start("tar", args);
+    process.waitForFinished(-1);
+
+    if (process.exitCode() != 0) {
+        qWarning() << "tar extraction failed:" << process.readAllStandardError();
+        emit error("Failed to restore profile backup");
+        return false;
+    }
+
+    emit backupRestored(backup.gameId, backup.id);
+    return true;
+}
+
 bool SaveManager::extractArchive(const QString &archivePath, const QString &targetDir)
 {
     QDir().mkpath(targetDir);
@@ -312,6 +385,8 @@ bool SaveManager::saveBackupMetadata(const BackupInfo &backup)
     obj["timestamp"] = backup.timestamp.toString(Qt::ISODate);
     obj["archivePath"] = backup.archivePath;
     obj["size"] = backup.size;
+    obj["profileName"] = backup.profileName;
+    obj["profileId"] = backup.profileId;
 
     QJsonDocument doc(obj);
 
@@ -353,6 +428,8 @@ BackupInfo SaveManager::loadBackupMetadata(const QString &metadataPath) const
     backup.timestamp = QDateTime::fromString(obj["timestamp"].toString(), Qt::ISODate);
     backup.archivePath = obj["archivePath"].toString();
     backup.size = obj["size"].toInteger();
+    backup.profileName = obj["profileName"].toString();
+    backup.profileId = obj["profileId"].toInt(-1);
 
     return backup;
 }

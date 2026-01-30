@@ -3,6 +3,7 @@
 
 #include <QObject>
 #include <QList>
+#include <QMap>
 #include <QSet>
 #include <QString>
 #include "core/gameinfo.h"
@@ -18,10 +19,14 @@ public:
 
     void setManifestManager(ManifestManager *manager);
     void setHiddenGameIds(const QSet<QString> &ids);
+    void setSavePathOverrides(const QMap<QString, QString> &overrides);
     void loadCustomGames(Database *db);
     QList<GameInfo> getDetectedGames() const;
     GameInfo getGameById(const QString &id) const;
     QString scanForSavePath(const QString &gameName, const QString &hint = QString());
+
+    bool loadCachedGames();
+    void saveCachedGames() const;
 
 private:
     QString expandPath(const QString &path) const;
@@ -36,6 +41,7 @@ private:
     QStringList m_steamLibraryFolders;
     QSet<QString> m_customSteamIds;
     QSet<QString> m_hiddenGames;
+    QMap<QString, QString> m_savePathOverrides;
     ManifestManager *m_manifestManager = nullptr;
 };
 

@@ -15,7 +15,8 @@ public:
     void setBackupDirectory(const QString &dir);
     QString getBackupDirectory() const;
 
-    bool createBackup(const GameInfo &game, const QString &backupName = QString(), const QString &notes = QString());
+    bool createBackup(const GameInfo &game, const QString &backupName = QString(),
+                      const QString &notes = QString(), const SaveProfile &profile = SaveProfile());
     bool restoreBackup(const BackupInfo &backup, const QString &targetPath);
     bool deleteBackup(const BackupInfo &backup);
 
@@ -32,7 +33,9 @@ private:
     QString getGameBackupDir(const QString &gameId) const;
     QString generateBackupId() const;
     bool compressDirectory(const QString &sourceDir, const QString &archivePath);
+    bool compressFiles(const QString &baseDir, const QStringList &relativePaths, const QString &archivePath);
     bool extractArchive(const QString &archivePath, const QString &targetDir);
+    bool restoreProfileBackup(const BackupInfo &backup, const QString &targetPath);
     bool copyDirectory(const QString &source, const QString &destination);
     bool removeDirectory(const QString &path);
     qint64 getDirectorySize(const QString &path) const;

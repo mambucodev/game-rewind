@@ -6,6 +6,8 @@
 #include "gamecarddelegate.h"
 #include "backupdialog.h"
 #include "addgamedialog.h"
+#include "onboardingdialog.h"
+#include "profiledialog.h"
 #include <QMessageBox>
 #include <QInputDialog>
 #include <QFileDialog>
@@ -22,9 +24,12 @@
 #include <QShortcut>
 #include <QKeySequence>
 #include <QLabel>
+#include <QStackedWidget>
 #include <QProgressBar>
 #include <QFrame>
 #include <QDateTime>
+#include <QJsonDocument>
+#include <QJsonObject>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -47,6 +52,7 @@ MainWindow::MainWindow(QWidget *parent)
     connect(ui->gamesTreeWidget, &QTreeWidget::customContextMenuRequested,
             this, &MainWindow::onGameContextMenu);
 
+    setupEmptyStates();
     setupConnections();
     setupKeyboardShortcuts();
 
@@ -65,10 +71,22 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_manifestManager, &ManifestManager::manifestReady,
             this, &MainWindow::onManifestReady);
 
-    // Load cached manifest (synchronous), then load games
-    m_manifestManager->loadCachedManifest();
-    loadGames();
+    // Fast startup: load cached detected games first (instant JSON read),
+    // then parse the manifest in the background for a full refresh.
+    loadGamesFromCache();
     updateStorageUsage();
+
+    // Parse cached manifest in a background thread.
+    // When done, onManifestReady() runs full detection and updates the cache.
+    m_manifestManager->loadCachedManifestAsync();
+    if (m_manifestManager->isParsing()) {
+        ui->statusbar->showMessage("Loading game database...");
+    } else {
+        // No cached manifest (first run) -- run detection with custom games only
+        loadGames();
+        updateStorageUsage();
+        showOnboardingIfNeeded();
+    }
 
     // Check for manifest updates in background
     m_manifestManager->checkForUpdates();
@@ -141,6 +159,130 @@ void MainWindow::setupKeyboardShortcuts()
     connect(refreshShortcut, &QShortcut::activated, this, &MainWindow::onRefreshGames);
 }
 
+void MainWindow::setupEmptyStates()
+{
+    // --- Games panel empty state ---
+    m_gamesStack = new QStackedWidget(this);
+
+    QVBoxLayout *leftLayout = qobject_cast<QVBoxLayout *>(ui->leftPanel->layout());
+    int treeIndex = leftLayout->indexOf(ui->gamesTreeWidget);
+    leftLayout->removeWidget(ui->gamesTreeWidget);
+    m_gamesStack->addWidget(ui->gamesTreeWidget);    // page 0: tree
+
+    QWidget *gamesEmptyPage = new QWidget(this);
+    QVBoxLayout *gamesEmptyLayout = new QVBoxLayout(gamesEmptyPage);
+    gamesEmptyLayout->setAlignment(Qt::AlignCenter);
+
+    QLabel *gamesIconLabel = new QLabel(gamesEmptyPage);
+    gamesIconLabel->setPixmap(
+        QIcon::fromTheme("applications-games").pixmap(48, 48));
+    gamesIconLabel->setAlignment(Qt::AlignCenter);
+    gamesIconLabel->setEnabled(false);
+
+    m_gamesEmptyLabel = new QLabel(
+        "No games detected\n\n"
+        "Click Add Game in the toolbar to add a game manually,\n"
+        "or press Refresh to re-scan your system.",
+        gamesEmptyPage);
+    m_gamesEmptyLabel->setAlignment(Qt::AlignCenter);
+    m_gamesEmptyLabel->setWordWrap(true);
+    QFont gamesEmptyFont = m_gamesEmptyLabel->font();
+    gamesEmptyFont.setBold(true);
+    m_gamesEmptyLabel->setFont(gamesEmptyFont);
+
+    QPalette pal = m_gamesEmptyLabel->palette();
+    QColor muted = pal.color(QPalette::WindowText);
+    muted.setAlphaF(0.45);
+    pal.setColor(QPalette::WindowText, muted);
+    m_gamesEmptyLabel->setPalette(pal);
+
+    gamesEmptyLayout->addWidget(gamesIconLabel);
+    gamesEmptyLayout->addSpacing(8);
+    gamesEmptyLayout->addWidget(m_gamesEmptyLabel);
+
+    m_gamesStack->addWidget(gamesEmptyPage);          // page 1: empty
+    leftLayout->insertWidget(treeIndex, m_gamesStack);
+
+    // --- Backups panel empty state ---
+    m_backupsStack = new QStackedWidget(this);
+
+    QVBoxLayout *rightLayout = qobject_cast<QVBoxLayout *>(ui->rightPanel->layout());
+    int listIndex = rightLayout->indexOf(ui->backupsListWidget);
+    rightLayout->removeWidget(ui->backupsListWidget);
+    m_backupsStack->addWidget(ui->backupsListWidget);  // page 0: list
+
+    QWidget *backupsEmptyPage = new QWidget(this);
+    QVBoxLayout *backupsEmptyLayout = new QVBoxLayout(backupsEmptyPage);
+    backupsEmptyLayout->setAlignment(Qt::AlignCenter);
+
+    QLabel *backupsIconLabel = new QLabel(backupsEmptyPage);
+    backupsIconLabel->setPixmap(
+        QIcon::fromTheme("document-save").pixmap(48, 48));
+    backupsIconLabel->setAlignment(Qt::AlignCenter);
+    backupsIconLabel->setEnabled(false);
+
+    m_backupsEmptyLabel = new QLabel(
+        "Select a game to view its backups",
+        backupsEmptyPage);
+    m_backupsEmptyLabel->setAlignment(Qt::AlignCenter);
+    m_backupsEmptyLabel->setWordWrap(true);
+    QFont backupsEmptyFont = m_backupsEmptyLabel->font();
+    backupsEmptyFont.setBold(true);
+    m_backupsEmptyLabel->setFont(backupsEmptyFont);
+    m_backupsEmptyLabel->setPalette(pal);  // reuse muted palette
+
+    backupsEmptyLayout->addWidget(backupsIconLabel);
+    backupsEmptyLayout->addSpacing(8);
+    backupsEmptyLayout->addWidget(m_backupsEmptyLabel);
+
+    m_backupsStack->addWidget(backupsEmptyPage);        // page 1: empty
+    rightLayout->insertWidget(listIndex, m_backupsStack);
+
+    // Start with empty state for backups (no game selected yet)
+    m_backupsStack->setCurrentIndex(1);
+}
+
+void MainWindow::showOnboardingIfNeeded()
+{
+    if (m_database->getSetting("onboarding_completed", "0") == "1") {
+        return;
+    }
+
+    OnboardingDialog dialog(m_gameDetector->getDetectedGames(), this);
+    dialog.exec();
+
+    m_database->setSetting("onboarding_completed", "1");
+}
+
+void MainWindow::updateGamesEmptyState()
+{
+    bool hasGames = false;
+    for (int i = 0; i < ui->gamesTreeWidget->topLevelItemCount(); ++i) {
+        QTreeWidgetItem *category = ui->gamesTreeWidget->topLevelItem(i);
+        if (category->childCount() > 0) {
+            hasGames = true;
+            break;
+        }
+    }
+    m_gamesStack->setCurrentIndex(hasGames ? 0 : 1);
+}
+
+void MainWindow::updateBackupsEmptyState()
+{
+    if (m_currentGameId.isEmpty()) {
+        m_backupsEmptyLabel->setText("Select a game to view its backups");
+        m_backupsStack->setCurrentIndex(1);
+    } else if (ui->backupsListWidget->count() == 0) {
+        m_backupsEmptyLabel->setText(
+            "No backups yet\n\n"
+            "Click Create Backup in the toolbar or press Ctrl+B\n"
+            "to create your first backup.");
+        m_backupsStack->setCurrentIndex(1);
+    } else {
+        m_backupsStack->setCurrentIndex(0);
+    }
+}
+
 void MainWindow::loadGames()
 {
     // Migrate legacy JSON configs if they exist (idempotent)
@@ -150,12 +292,51 @@ void MainWindow::loadGames()
         m_database->migrateFromJson(legacyConfigDir);
     }
 
-    // Load custom games from database, filtering hidden ones
+    // Load overrides and hidden games, then detect
     m_gameDetector->setHiddenGameIds(m_database->getHiddenGameIds());
+    m_gameDetector->setSavePathOverrides(loadSavePathOverrides());
     m_gameDetector->loadCustomGames(m_database);
 
-    ui->gamesTreeWidget->clear();
     QList<GameInfo> games = m_gameDetector->getDetectedGames();
+
+    // Filter out hidden games from cache-loaded entries
+    QSet<QString> hidden = m_database->getHiddenGameIds();
+    QList<GameInfo> filtered;
+    for (const GameInfo &game : games) {
+        if (!hidden.contains(game.id)) {
+            filtered.append(game);
+        }
+    }
+
+    populateGameTree(filtered);
+
+    // Save cache so next launch is instant
+    m_gameDetector->saveCachedGames();
+}
+
+void MainWindow::loadGamesFromCache()
+{
+    if (!m_gameDetector->loadCachedGames()) {
+        return;
+    }
+
+    QList<GameInfo> games = m_gameDetector->getDetectedGames();
+
+    // Filter out hidden games
+    QSet<QString> hidden = m_database->getHiddenGameIds();
+    QList<GameInfo> filtered;
+    for (const GameInfo &game : games) {
+        if (!hidden.contains(game.id)) {
+            filtered.append(game);
+        }
+    }
+
+    populateGameTree(filtered);
+}
+
+void MainWindow::populateGameTree(const QList<GameInfo> &games)
+{
+    ui->gamesTreeWidget->clear();
 
     // Group games by platform
     QMap<QString, QList<GameInfo>> platformGames;
@@ -212,6 +393,8 @@ void MainWindow::loadGames()
     }
 
     ui->statusbar->showMessage(QString("Detected %1 games").arg(games.size()));
+
+    updateGamesEmptyState();
 }
 
 void MainWindow::loadBackupsForGame(const QString &gameId)
@@ -229,6 +412,7 @@ void MainWindow::loadBackupsForGame(const QString &gameId)
     }
 
     setBackupsEnabled(true);
+    updateBackupsEmptyState();
 }
 
 void MainWindow::updateGameCard(const QString &gameId)
@@ -266,8 +450,14 @@ void MainWindow::setBackupsEnabled(bool enabled)
 void MainWindow::styleBackupItem(QListWidgetItem *item, const BackupInfo &backup)
 {
     // Create multi-line text with styling
-    QString displayText = QString("<b>%1</b><br><span style='color: gray; font-size: 9pt;'>%2 &bull; %3</span>")
-                              .arg(backup.displayName)
+    QString profileTag;
+    if (!backup.profileName.isEmpty()) {
+        profileTag = QString(" <span style='color: #5599cc;'>[%1]</span>").arg(backup.profileName.toHtmlEscaped());
+    }
+
+    QString displayText = QString("<b>%1</b>%2<br><span style='color: gray; font-size: 9pt;'>%3 &bull; %4</span>")
+                              .arg(backup.displayName.toHtmlEscaped())
+                              .arg(profileTag)
                               .arg(formatTimestamp(backup.timestamp))
                               .arg(formatFileSize(backup.size));
 
@@ -361,6 +551,7 @@ void MainWindow::onGameSelected()
         ui->selectedGameLabel->setText("No game selected");
         ui->actionCreateBackup->setEnabled(false);
         ui->backupsListWidget->clear();
+        updateBackupsEmptyState();
         return;
     }
 
@@ -371,6 +562,7 @@ void MainWindow::onGameSelected()
         ui->selectedGameLabel->setText("Select a game from the list");
         ui->actionCreateBackup->setEnabled(false);
         ui->backupsListWidget->clear();
+        updateBackupsEmptyState();
         return;
     }
 
@@ -399,17 +591,20 @@ void MainWindow::onCreateBackup()
         return;
     }
 
-    BackupDialog dialog(this);
+    QList<SaveProfile> profiles = m_database->getProfilesForGame(game.id);
+
+    BackupDialog dialog(profiles, this);
     if (dialog.exec() != QDialog::Accepted) {
         return;
     }
 
     QString backupName = dialog.getBackupName();
     QString backupNotes = dialog.getBackupNotes();
+    SaveProfile selectedProfile = dialog.getSelectedProfile();
 
     ui->statusbar->showMessage("Creating backup...");
 
-    if (m_saveManager->createBackup(game, backupName, backupNotes)) {
+    if (m_saveManager->createBackup(game, backupName, backupNotes, selectedProfile)) {
         ui->statusbar->showMessage("Backup created successfully", 3000);
     } else {
         ui->statusbar->showMessage("Failed to create backup", 3000);
@@ -425,13 +620,19 @@ void MainWindow::onRestoreBackup()
         return;
     }
 
+    QString message;
+    if (backup.profileId != -1) {
+        message = QString("Are you sure you want to restore '%1' (profile: %2)?\n\n"
+                          "This will overwrite only the files in that profile for %3.")
+                      .arg(backup.displayName, backup.profileName, game.name);
+    } else {
+        message = QString("Are you sure you want to restore the backup '%1'?\n\n"
+                          "This will replace the current save files for %2.")
+                      .arg(backup.displayName, game.name);
+    }
+
     QMessageBox::StandardButton reply = QMessageBox::question(this,
-        "Restore Backup",
-        QString("Are you sure you want to restore the backup '%1'?\n\n"
-                "This will replace the current save files for %2.")
-            .arg(backup.displayName)
-            .arg(game.name),
-        QMessageBox::Yes | QMessageBox::No);
+        "Restore Backup", message, QMessageBox::Yes | QMessageBox::No);
 
     if (reply != QMessageBox::Yes) {
         return;
@@ -576,14 +777,49 @@ void MainWindow::onGameContextMenu(const QPoint &pos)
         return;
     }
 
+    GameInfo game = m_gameDetector->getGameById(gameId);
+
     QMenu menu(this);
+
+    // Switch Save Path submenu (only if alternatives exist)
+    QMenu *switchMenu = nullptr;
+    if (!game.alternativeSavePaths.isEmpty()) {
+        switchMenu = menu.addMenu("Switch Save Path");
+        // Show current path (checked)
+        QAction *currentAction = switchMenu->addAction(game.detectedSavePath);
+        currentAction->setCheckable(true);
+        currentAction->setChecked(true);
+        currentAction->setEnabled(false);
+        switchMenu->addSeparator();
+        // Show alternatives
+        for (const QString &altPath : game.alternativeSavePaths) {
+            switchMenu->addAction(altPath);
+        }
+    }
+
+    QAction *profilesAction = menu.addAction("Manage Profiles...");
     QAction *hideAction = menu.addAction("Hide Game");
 
     QAction *selected = menu.exec(ui->gamesTreeWidget->viewport()->mapToGlobal(pos));
-    if (selected == hideAction) {
+    if (!selected) {
+        return;
+    }
+
+    if (selected == profilesAction) {
+        ProfileDialog dialog(m_database, game, this);
+        dialog.exec();
+    } else if (selected == hideAction) {
         m_database->hideGame(gameId, gameName);
         loadGames();
         ui->statusbar->showMessage(QString("Hidden: %1").arg(gameName), 3000);
+    } else if (switchMenu && switchMenu->actions().contains(selected)) {
+        // User picked an alternative save path
+        QString newPath = selected->text();
+        saveSavePathOverride(gameId, newPath);
+        loadGames();
+        // Re-select the game so the UI updates
+        onGameSelected();
+        ui->statusbar->showMessage(QString("Switched save path for %1").arg(gameName), 3000);
     }
 }
 
@@ -708,6 +944,9 @@ void MainWindow::onManifestReady()
     // Manifest was freshly downloaded or updated - reload games to pick up new entries
     loadGames();
     updateStorageUsage();
+
+    // Show onboarding after first manifest load (so the games grid has full data)
+    showOnboardingIfNeeded();
 }
 
 void MainWindow::updateStorageUsage()
@@ -731,4 +970,36 @@ void MainWindow::updateStorageUsage()
                              .arg(totalBackups);
 
     m_storageLabel->setText(storageText);
+}
+
+QMap<QString, QString> MainWindow::loadSavePathOverrides() const
+{
+    QMap<QString, QString> overrides;
+    QString json = m_database->getSetting("save_path_overrides");
+    if (json.isEmpty())
+        return overrides;
+
+    QJsonDocument doc = QJsonDocument::fromJson(json.toUtf8());
+    if (!doc.isObject())
+        return overrides;
+
+    QJsonObject obj = doc.object();
+    for (auto it = obj.constBegin(); it != obj.constEnd(); ++it) {
+        overrides.insert(it.key(), it.value().toString());
+    }
+    return overrides;
+}
+
+void MainWindow::saveSavePathOverride(const QString &gameId, const QString &path)
+{
+    QMap<QString, QString> overrides = loadSavePathOverrides();
+    overrides.insert(gameId, path);
+
+    QJsonObject obj;
+    for (auto it = overrides.constBegin(); it != overrides.constEnd(); ++it) {
+        obj.insert(it.key(), it.value());
+    }
+
+    m_database->setSetting("save_path_overrides",
+                           QString::fromUtf8(QJsonDocument(obj).toJson(QJsonDocument::Compact)));
 }

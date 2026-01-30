@@ -7,6 +7,7 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QDebug>
+#include <QtConcurrent>
 #include <yaml-cpp/yaml.h>
 
 const QString ManifestManager::MANIFEST_URL =
@@ -18,6 +19,8 @@ ManifestManager::ManifestManager(QObject *parent)
 {
     connect(m_networkManager, &QNetworkAccessManager::finished,
             this, &ManifestManager::onDownloadFinished);
+    connect(&m_parseWatcher, &QFutureWatcher<QMap<int, ManifestGameEntry>>::finished,
+            this, &ManifestManager::onAsyncParseFinished);
 }
 
 bool ManifestManager::loadCachedManifest()
@@ -31,6 +34,41 @@ bool ManifestManager::loadCachedManifest()
 
     qDebug() << "Loading cached manifest from" << cachePath;
     return parseManifestFile(cachePath);
+}
+
+void ManifestManager::loadCachedManifestAsync()
+{
+    QString cachePath = getCachePath();
+
+    if (!QFile::exists(cachePath)) {
+        qDebug() << "No cached manifest found at" << cachePath;
+        return;
+    }
+
+    if (m_parsing) {
+        return;
+    }
+
+    m_parsing = true;
+    qDebug() << "Loading cached manifest async from" << cachePath;
+    m_parseWatcher.setFuture(QtConcurrent::run(&ManifestManager::parseManifestInThread, cachePath));
+}
+
+void ManifestManager::onAsyncParseFinished()
+{
+    m_parsing = false;
+    QMap<int, ManifestGameEntry> result = m_parseWatcher.result();
+    if (!result.isEmpty()) {
+        m_steamIdIndex = result;
+        m_loaded = true;
+        qDebug() << "Async manifest parse complete:" << m_steamIdIndex.size() << "Steam games indexed";
+        emit manifestReady();
+    }
+}
+
+bool ManifestManager::isParsing() const
+{
+    return m_parsing;
 }
 
 void ManifestManager::checkForUpdates()
@@ -131,37 +169,27 @@ void ManifestManager::onDownloadFinished(QNetworkReply *reply)
     }
 }
 
-bool ManifestManager::parseManifestFile(const QString &filePath)
+QMap<int, ManifestGameEntry> ManifestManager::parseManifestInThread(const QString &filePath)
 {
+    QMap<int, ManifestGameEntry> index;
     try {
         YAML::Node root = YAML::LoadFile(filePath.toStdString());
-
         if (!root.IsMap()) {
-            qWarning() << "Manifest root is not a map";
-            return false;
+            return index;
         }
-
-        m_steamIdIndex.clear();
-        int totalGames = 0;
-        int steamGames = 0;
 
         for (auto it = root.begin(); it != root.end(); ++it) {
             QString gameName = QString::fromStdString(it->first.as<std::string>());
             YAML::Node gameNode = it->second;
-
-            if (!gameNode.IsMap()) {
-                continue;
-            }
+            if (!gameNode.IsMap()) continue;
 
             ManifestGameEntry entry;
             entry.name = gameName;
 
-            // Parse steam ID
             if (gameNode["steam"] && gameNode["steam"]["id"]) {
                 entry.steamId = gameNode["steam"]["id"].as<int>(0);
             }
 
-            // Parse install dirs
             if (gameNode["installDir"] && gameNode["installDir"].IsMap()) {
                 for (auto dirIt = gameNode["installDir"].begin();
                      dirIt != gameNode["installDir"].end(); ++dirIt) {
@@ -169,7 +197,6 @@ bool ManifestManager::parseManifestFile(const QString &filePath)
                 }
             }
 
-            // Parse files
             if (gameNode["files"] && gameNode["files"].IsMap()) {
                 for (auto fileIt = gameNode["files"].begin();
                      fileIt != gameNode["files"].end(); ++fileIt) {
@@ -178,14 +205,11 @@ bool ManifestManager::parseManifestFile(const QString &filePath)
 
                     YAML::Node fileNode = fileIt->second;
                     if (fileNode.IsMap()) {
-                        // Parse tags
                         if (fileNode["tags"] && fileNode["tags"].IsSequence()) {
                             for (const auto &tag : fileNode["tags"]) {
                                 fileEntry.tags << QString::fromStdString(tag.as<std::string>());
                             }
                         }
-
-                        // Parse when constraints
                         if (fileNode["when"] && fileNode["when"].IsSequence()) {
                             for (const auto &constraint : fileNode["when"]) {
                                 FileConstraint fc;
@@ -199,28 +223,30 @@ bool ManifestManager::parseManifestFile(const QString &filePath)
                             }
                         }
                     }
-
                     entry.files.append(fileEntry);
                 }
             }
 
-            totalGames++;
-
-            // Index by Steam ID for fast lookup
             if (entry.steamId > 0) {
-                m_steamIdIndex[entry.steamId] = entry;
-                steamGames++;
+                index[entry.steamId] = entry;
             }
         }
-
-        m_loaded = true;
-        qDebug() << "Parsed manifest:" << totalGames << "total games," << steamGames << "with Steam IDs";
-        return true;
-
     } catch (const YAML::Exception &e) {
         qWarning() << "YAML parse error:" << e.what();
+    }
+    return index;
+}
+
+bool ManifestManager::parseManifestFile(const QString &filePath)
+{
+    QMap<int, ManifestGameEntry> result = parseManifestInThread(filePath);
+    if (result.isEmpty()) {
         return false;
     }
+    m_steamIdIndex = result;
+    m_loaded = true;
+    qDebug() << "Parsed manifest:" << m_steamIdIndex.size() << "Steam games indexed";
+    return true;
 }
 
 ManifestGameEntry ManifestManager::findBySteamId(int steamAppId) const

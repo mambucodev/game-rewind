@@ -92,15 +92,48 @@ bool Database::createTables()
         return false;
     }
 
+    if (!query.exec(
+            "CREATE TABLE IF NOT EXISTS app_settings ("
+            "    key   TEXT PRIMARY KEY,"
+            "    value TEXT NOT NULL"
+            ")")) {
+        qCritical() << "Failed to create app_settings table:" << query.lastError().text();
+        return false;
+    }
+
+    if (!query.exec(
+            "CREATE TABLE IF NOT EXISTS save_profiles ("
+            "    id         INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "    game_id    TEXT NOT NULL,"
+            "    name       TEXT NOT NULL,"
+            "    files      TEXT NOT NULL,"
+            "    created_at TEXT NOT NULL DEFAULT (datetime('now')),"
+            "    updated_at TEXT NOT NULL DEFAULT (datetime('now')),"
+            "    UNIQUE(game_id, name)"
+            ")")) {
+        qCritical() << "Failed to create save_profiles table:" << query.lastError().text();
+        return false;
+    }
+
     // Seed defaults on fresh install
     if (schemaVersion() == 0) {
         seedDefaults();
-        setSchemaVersion(2);
+        setSchemaVersion(4);
     }
 
     // Migrate schema v1 -> v2 (hidden_games table already created above)
     if (schemaVersion() == 1) {
         setSchemaVersion(2);
+    }
+
+    // Migrate schema v2 -> v3 (app_settings table already created above)
+    if (schemaVersion() == 2) {
+        setSchemaVersion(3);
+    }
+
+    // Migrate schema v3 -> v4 (save_profiles table already created above)
+    if (schemaVersion() == 3) {
+        setSchemaVersion(4);
     }
 
     return true;
@@ -406,6 +439,133 @@ QList<QPair<QString, QString>> Database::getHiddenGames() const
         }
     }
     return games;
+}
+
+QString Database::getSetting(const QString &key, const QString &defaultValue) const
+{
+    QSqlDatabase db = QSqlDatabase::database(m_connectionName);
+    QSqlQuery query(db);
+    query.prepare("SELECT value FROM app_settings WHERE key = ?");
+    query.addBindValue(key);
+    if (query.exec() && query.next()) {
+        return query.value(0).toString();
+    }
+    return defaultValue;
+}
+
+bool Database::setSetting(const QString &key, const QString &value)
+{
+    QSqlDatabase db = QSqlDatabase::database(m_connectionName);
+    QSqlQuery query(db);
+    query.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)");
+    query.addBindValue(key);
+    query.addBindValue(value);
+    if (!query.exec()) {
+        qWarning() << "Failed to set setting" << key << ":" << query.lastError().text();
+        return false;
+    }
+    return true;
+}
+
+QList<SaveProfile> Database::getProfilesForGame(const QString &gameId) const
+{
+    QList<SaveProfile> profiles;
+    QSqlDatabase db = QSqlDatabase::database(m_connectionName);
+    QSqlQuery query(db);
+
+    query.prepare("SELECT id, game_id, name, files FROM save_profiles WHERE game_id = ? ORDER BY name");
+    query.addBindValue(gameId);
+
+    if (query.exec()) {
+        while (query.next()) {
+            SaveProfile p;
+            p.id = query.value(0).toInt();
+            p.gameId = query.value(1).toString();
+            p.name = query.value(2).toString();
+            p.files = deserializeSavePaths(query.value(3).toString());
+            profiles.append(p);
+        }
+    }
+    return profiles;
+}
+
+SaveProfile Database::getProfile(int profileId) const
+{
+    SaveProfile p;
+    QSqlDatabase db = QSqlDatabase::database(m_connectionName);
+    QSqlQuery query(db);
+
+    query.prepare("SELECT id, game_id, name, files FROM save_profiles WHERE id = ?");
+    query.addBindValue(profileId);
+
+    if (query.exec() && query.next()) {
+        p.id = query.value(0).toInt();
+        p.gameId = query.value(1).toString();
+        p.name = query.value(2).toString();
+        p.files = deserializeSavePaths(query.value(3).toString());
+    }
+    return p;
+}
+
+int Database::addProfile(const SaveProfile &profile)
+{
+    QSqlDatabase db = QSqlDatabase::database(m_connectionName);
+    QSqlQuery query(db);
+
+    query.prepare("INSERT INTO save_profiles (game_id, name, files) VALUES (?, ?, ?)");
+    query.addBindValue(profile.gameId);
+    query.addBindValue(profile.name);
+    query.addBindValue(serializeSavePaths(profile.files));
+
+    if (!query.exec()) {
+        qWarning() << "Failed to add profile:" << query.lastError().text();
+        return -1;
+    }
+    return query.lastInsertId().toInt();
+}
+
+bool Database::updateProfile(const SaveProfile &profile)
+{
+    QSqlDatabase db = QSqlDatabase::database(m_connectionName);
+    QSqlQuery query(db);
+
+    query.prepare("UPDATE save_profiles SET name = ?, files = ?, updated_at = datetime('now') WHERE id = ?");
+    query.addBindValue(profile.name);
+    query.addBindValue(serializeSavePaths(profile.files));
+    query.addBindValue(profile.id);
+
+    if (!query.exec()) {
+        qWarning() << "Failed to update profile:" << query.lastError().text();
+        return false;
+    }
+    return query.numRowsAffected() > 0;
+}
+
+bool Database::removeProfile(int profileId)
+{
+    QSqlDatabase db = QSqlDatabase::database(m_connectionName);
+    QSqlQuery query(db);
+
+    query.prepare("DELETE FROM save_profiles WHERE id = ?");
+    query.addBindValue(profileId);
+
+    if (!query.exec()) {
+        qWarning() << "Failed to remove profile:" << query.lastError().text();
+        return false;
+    }
+    return query.numRowsAffected() > 0;
+}
+
+bool Database::profileExists(const QString &gameId, const QString &name) const
+{
+    QSqlDatabase db = QSqlDatabase::database(m_connectionName);
+    QSqlQuery query(db);
+
+    query.prepare("SELECT 1 FROM save_profiles WHERE game_id = ? AND name = ?");
+    query.addBindValue(gameId);
+    query.addBindValue(name);
+
+    return query.exec() && query.next();
 }
 
 QString Database::serializeSavePaths(const QStringList &paths)

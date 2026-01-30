@@ -10,7 +10,7 @@ set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
 # Find Qt6 packages
-find_package(Qt6 REQUIRED COMPONENTS Core Widgets Network Sql)
+find_package(Qt6 REQUIRED COMPONENTS Core Widgets Network Sql Concurrent)
 find_package(yaml-cpp REQUIRED)
 
 # Source files
@@ -20,6 +20,7 @@ set(SOURCES
     src/core/gameinfo.cpp
     src/core/database.cpp
     src/core/savemanager.cpp
+    src/core/profiledetector.cpp
     # Steam
     src/steam/steamutils.cpp
     src/steam/manifestmanager.cpp
@@ -32,6 +33,8 @@ set(SOURCES
     src/ui/addgamedialog.cpp
     src/ui/gameconfigdialog.cpp
     src/ui/gameicon.cpp
+    src/ui/onboardingdialog.cpp
+    src/ui/profiledialog.cpp
 )
 
 set(HEADERS
@@ -39,6 +42,7 @@ set(HEADERS
     src/core/gameinfo.h
     src/core/database.h
     src/core/savemanager.h
+    src/core/profiledetector.h
     # Steam
     src/steam/steamutils.h
     src/steam/manifestmanager.h
@@ -51,6 +55,8 @@ set(HEADERS
     src/ui/addgamedialog.h
     src/ui/gameconfigdialog.h
     src/ui/gameicon.h
+    src/ui/onboardingdialog.h
+    src/ui/profiledialog.h
 )
 
 set(UI_FILES
@@ -79,6 +85,7 @@ target_link_libraries(${PROJECT_NAME}
     Qt6::Widgets
     Qt6::Network
     Qt6::Sql
+    Qt6::Concurrent
     yaml-cpp::yaml-cpp
 )
 

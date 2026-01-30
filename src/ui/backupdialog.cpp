@@ -4,16 +4,32 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QTextEdit>
+#include <QComboBox>
 #include <QPushButton>
 #include <QDialogButtonBox>
 
-BackupDialog::BackupDialog(QWidget *parent)
+BackupDialog::BackupDialog(const QList<SaveProfile> &profiles, QWidget *parent)
     : QDialog(parent)
+    , m_profileCombo(nullptr)
+    , m_profiles(profiles)
 {
     setWindowTitle("Create Backup");
     setMinimumWidth(400);
 
     QVBoxLayout *layout = new QVBoxLayout(this);
+
+    // Profile selection (only shown when profiles exist)
+    if (!m_profiles.isEmpty()) {
+        QLabel *profileLabel = new QLabel("Profile:", this);
+        m_profileCombo = new QComboBox(this);
+        m_profileCombo->addItem("All Files", -1);
+        for (const SaveProfile &p : m_profiles) {
+            QString label = QString("%1 (%2)").arg(p.name, p.files.join(", "));
+            m_profileCombo->addItem(label, p.id);
+        }
+        layout->addWidget(profileLabel);
+        layout->addWidget(m_profileCombo);
+    }
 
     // Name field
     QLabel *nameLabel = new QLabel("Backup Name (optional):", this);
@@ -53,4 +69,19 @@ QString BackupDialog::getBackupName() const
 QString BackupDialog::getBackupNotes() const
 {
     return m_notesEdit->toPlainText().trimmed();
+}
+
+SaveProfile BackupDialog::getSelectedProfile() const
+{
+    if (!m_profileCombo || m_profileCombo->currentData().toInt() == -1) {
+        return SaveProfile();
+    }
+
+    int profileId = m_profileCombo->currentData().toInt();
+    for (const SaveProfile &p : m_profiles) {
+        if (p.id == profileId) {
+            return p;
+        }
+    }
+    return SaveProfile();
 }

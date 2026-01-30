@@ -32,6 +32,18 @@ public:
     QSet<QString> getHiddenGameIds() const;
     QList<QPair<QString, QString>> getHiddenGames() const;
 
+    // Save profiles
+    QList<SaveProfile> getProfilesForGame(const QString &gameId) const;
+    SaveProfile getProfile(int profileId) const;
+    int addProfile(const SaveProfile &profile);
+    bool updateProfile(const SaveProfile &profile);
+    bool removeProfile(int profileId);
+    bool profileExists(const QString &gameId, const QString &name) const;
+
+    // App settings (generic key-value store)
+    QString getSetting(const QString &key, const QString &defaultValue = QString()) const;
+    bool setSetting(const QString &key, const QString &value);
+
     QString databasePath() const;
 
 private:

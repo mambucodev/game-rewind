@@ -10,6 +10,7 @@
 #include "core/gameinfo.h"
 
 class QLabel;
+class QStackedWidget;
 
 QT_BEGIN_NAMESPACE
 namespace Ui { class MainWindow; }
@@ -48,7 +49,13 @@ private slots:
 private:
     void setupConnections();
     void setupKeyboardShortcuts();
+    void setupEmptyStates();
+    void showOnboardingIfNeeded();
+    void updateGamesEmptyState();
+    void updateBackupsEmptyState();
     void loadGames();
+    void loadGamesFromCache();
+    void populateGameTree(const QList<GameInfo> &games);
     void loadBackupsForGame(const QString &gameId);
     void updateGameCard(const QString &gameId);
     void setBackupsEnabled(bool enabled);
@@ -60,6 +67,9 @@ private:
 
     void updateStorageUsage();
 
+    QMap<QString, QString> loadSavePathOverrides() const;
+    void saveSavePathOverride(const QString &gameId, const QString &path);
+
     Ui::MainWindow *ui;
     GameDetector *m_gameDetector;
     SaveManager *m_saveManager;
@@ -67,6 +77,10 @@ private:
     Database *m_database;
     QString m_currentGameId;
     QLabel *m_storageLabel;
+    QStackedWidget *m_gamesStack;
+    QLabel *m_gamesEmptyLabel;
+    QStackedWidget *m_backupsStack;
+    QLabel *m_backupsEmptyLabel;
 };
 
 #endif // MAINWINDOW_H
