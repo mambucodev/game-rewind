@@ -52,6 +52,7 @@ jobs:
           update: true
           install: >-
             mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
             mingw-w64-x86_64-gcc
             mingw-w64-x86_64-qt6-base
             mingw-w64-x86_64-yaml-cpp
@@ -59,7 +60,7 @@ jobs:
 
       - name: Configure
         shell: msys2 {0}
-        run: cmake -B build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
         shell: msys2 {0}
