@@ -27,6 +27,13 @@ QString SaveManager::getBackupDirectory() const
     return m_backupDir;
 }
 
+void SaveManager::setCompressionLevel(int level)
+{
+    if (level >= 1 && level <= 9) {
+        m_compressionLevel = level;
+    }
+}
+
 bool SaveManager::createBackup(const GameInfo &game, const QString &backupName,
                                const QString &notes, const SaveProfile &profile)
 {
@@ -159,6 +166,22 @@ bool SaveManager::deleteBackup(const BackupInfo &backup)
     return success;
 }
 
+bool SaveManager::updateBackupMetadata(const BackupInfo &backup)
+{
+    if (backup.archivePath.isEmpty() || !QFile::exists(backup.archivePath)) {
+        emit error("Backup archive not found");
+        return false;
+    }
+
+    if (!saveBackupMetadata(backup)) {
+        emit error("Failed to update backup metadata");
+        return false;
+    }
+
+    emit backupUpdated(backup.gameId, backup.id);
+    return true;
+}
+
 QList<BackupInfo> SaveManager::getBackupsForGame(const QString &gameId) const
 {
     QList<BackupInfo> backups;
@@ -200,6 +223,248 @@ BackupInfo SaveManager::getBackupById(const QString &gameId, const QString &back
     return BackupInfo();
 }
 
+bool SaveManager::verifyBackup(const BackupInfo &backup)
+{
+    if (!QFile::exists(backup.archivePath)) {
+        emit backupVerified(backup.gameId, backup.id, false);
+        return false;
+    }
+
+    QProcess process;
+    QStringList args;
+    args << "-tzf" << backup.archivePath;
+
+    process.start("tar", args);
+    process.waitForFinished(30000);
+
+    bool valid = (process.exitCode() == 0);
+    emit backupVerified(backup.gameId, backup.id, valid);
+    return valid;
+}
+
+bool SaveManager::isBusy() const
+{
+    return m_pendingOp != PendingOp::None;
+}
+
+void SaveManager::createBackupAsync(const GameInfo &game, const QString &backupName,
+                                     const QString &notes, const SaveProfile &profile)
+{
+    if (isBusy()) {
+        emit error("Another operation is in progress");
+        return;
+    }
+
+    if (!game.isDetected || game.detectedSavePath.isEmpty()) {
+        emit error("Game save path not detected");
+        return;
+    }
+    if (!QFile::exists(game.detectedSavePath)) {
+        emit error("Save path does not exist: " + game.detectedSavePath);
+        return;
+    }
+
+    QString gameBackupDir = getGameBackupDir(game.id);
+    QDir().mkpath(gameBackupDir);
+
+    m_pendingBackup = BackupInfo();
+    m_pendingBackup.id = generateBackupId();
+    m_pendingBackup.gameId = game.id;
+    m_pendingBackup.gameName = game.name;
+    m_pendingBackup.notes = notes;
+    m_pendingBackup.timestamp = QDateTime::currentDateTime();
+    m_pendingBackup.profileId = profile.id;
+    m_pendingBackup.profileName = profile.name;
+    m_pendingBackup.displayName = backupName.isEmpty()
+        ? m_pendingBackup.timestamp.toString("yyyy-MM-dd HH:mm:ss")
+        : backupName;
+
+    QString archiveName = m_pendingBackup.id + ".tar.gz";
+    m_pendingBackup.archivePath = gameBackupDir + "/" + archiveName;
+
+    m_pendingGame = game;
+    m_pendingOp = PendingOp::Backup;
+
+    m_process = new QProcess(this);
+    connect(m_process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+            this, &SaveManager::onProcessFinished);
+
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    env.insert("GZIP", QString("-%1").arg(m_compressionLevel));
+    m_process->setProcessEnvironment(env);
+
+    QStringList args;
+    if (profile.id == -1) {
+        QFileInfo sourceInfo(game.detectedSavePath);
+        m_process->setWorkingDirectory(sourceInfo.absolutePath());
+        args << "-czf" << m_pendingBackup.archivePath << sourceInfo.fileName();
+    } else {
+        m_process->setWorkingDirectory(game.detectedSavePath);
+        args << "-czf" << m_pendingBackup.archivePath;
+        for (const QString &relPath : profile.files) {
+            QString fullPath = game.detectedSavePath + "/" + relPath;
+            if (QFileInfo::exists(fullPath)) {
+                args << relPath;
+            }
+        }
+        if (args.size() <= 2) {
+            emit error("No profile files found on disk");
+            m_pendingOp = PendingOp::None;
+            delete m_process;
+            m_process = nullptr;
+            return;
+        }
+    }
+
+    emit operationStarted("Creating backup...");
+    m_process->start("tar", args);
+}
+
+void SaveManager::restoreBackupAsync(const BackupInfo &backup, const QString &targetPath)
+{
+    if (isBusy()) {
+        emit error("Another operation is in progress");
+        return;
+    }
+
+    if (!QFile::exists(backup.archivePath)) {
+        emit error("Backup archive not found: " + backup.archivePath);
+        return;
+    }
+
+    m_pendingBackup = backup;
+    m_pendingRestoreTarget = targetPath;
+    m_pendingIsProfile = (backup.profileId != -1);
+    m_pendingOp = PendingOp::Restore;
+
+    m_process = new QProcess(this);
+    connect(m_process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+            this, &SaveManager::onProcessFinished);
+
+    QStringList args;
+    if (m_pendingIsProfile) {
+        QDir().mkpath(targetPath);
+        m_process->setWorkingDirectory(targetPath);
+        m_pendingTempDir.clear();
+        args << "-xzf" << backup.archivePath;
+    } else {
+        m_pendingTempDir = m_backupDir + "/temp_restore_" + QString::number(QDateTime::currentMSecsSinceEpoch());
+        QDir().mkpath(m_pendingTempDir);
+        m_process->setWorkingDirectory(m_pendingTempDir);
+        args << "-xzf" << backup.archivePath;
+    }
+
+    emit operationStarted("Restoring backup...");
+    m_process->start("tar", args);
+}
+
+void SaveManager::cancelOperation()
+{
+    if (m_process && m_process->state() != QProcess::NotRunning) {
+        m_process->kill();
+        m_process->waitForFinished(3000);
+    }
+    if (m_pendingOp == PendingOp::Backup) {
+        QFile::remove(m_pendingBackup.archivePath);
+    }
+    if (!m_pendingTempDir.isEmpty()) {
+        removeDirectory(m_pendingTempDir);
+        m_pendingTempDir.clear();
+    }
+    m_pendingOp = PendingOp::None;
+    if (m_process) {
+        m_process->deleteLater();
+        m_process = nullptr;
+    }
+    emit operationCancelled();
+}
+
+void SaveManager::onProcessFinished(int exitCode, QProcess::ExitStatus exitStatus)
+{
+    Q_UNUSED(exitStatus);
+
+    if (m_pendingOp == PendingOp::Backup) {
+        if (exitCode != 0) {
+            qWarning() << "tar failed:" << m_process->readAllStandardError();
+            QFile::remove(m_pendingBackup.archivePath);
+            emit error("Failed to create backup archive");
+        } else {
+            m_pendingBackup.size = QFileInfo(m_pendingBackup.archivePath).size();
+            if (saveBackupMetadata(m_pendingBackup)) {
+                emit backupCreated(m_pendingBackup.gameId, m_pendingBackup.id);
+            } else {
+                QFile::remove(m_pendingBackup.archivePath);
+                emit error("Failed to save backup metadata");
+            }
+        }
+    } else if (m_pendingOp == PendingOp::Restore) {
+        if (exitCode != 0) {
+            qWarning() << "tar extraction failed:" << m_process->readAllStandardError();
+            if (!m_pendingTempDir.isEmpty()) {
+                removeDirectory(m_pendingTempDir);
+            }
+            emit error("Failed to extract backup archive");
+        } else if (m_pendingIsProfile) {
+            emit backupRestored(m_pendingBackup.gameId, m_pendingBackup.id);
+        } else {
+            // Full restore: move from temp dir to target
+            QString targetPath = m_pendingRestoreTarget;
+            if (QFile::exists(targetPath)) {
+                removeDirectory(targetPath);
+            }
+
+            QDir tempDirObj(m_pendingTempDir);
+            QStringList entries = tempDirObj.entryList(QDir::NoDotAndDotDot | QDir::AllEntries);
+            QString sourceDir = m_pendingTempDir;
+            if (entries.size() == 1) {
+                QFileInfo entryInfo(m_pendingTempDir + "/" + entries.first());
+                if (entryInfo.isDir()) {
+                    sourceDir = entryInfo.absoluteFilePath();
+                }
+            }
+
+            if (copyDirectory(sourceDir, targetPath)) {
+                emit backupRestored(m_pendingBackup.gameId, m_pendingBackup.id);
+            } else {
+                emit error("Failed to restore backup to target location");
+            }
+            removeDirectory(m_pendingTempDir);
+        }
+        m_pendingTempDir.clear();
+    }
+
+    m_pendingOp = PendingOp::None;
+    m_process->deleteLater();
+    m_process = nullptr;
+    emit operationFinished();
+}
+
+QStringList SaveManager::getAllGameIdsWithBackups() const
+{
+    QStringList gameIds;
+    QDir gamesDir(m_backupDir + "/games");
+    if (!gamesDir.exists()) return gameIds;
+
+    QStringList subdirs = gamesDir.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+    for (const QString &subdir : subdirs) {
+        QDir gameDir(gamesDir.absoluteFilePath(subdir));
+        QStringList archives = gameDir.entryList(QStringList() << "*.tar.gz", QDir::Files);
+        if (!archives.isEmpty()) {
+            gameIds.append(subdir);
+        }
+    }
+    return gameIds;
+}
+
+QString SaveManager::getGameNameFromBackups(const QString &gameId) const
+{
+    QList<BackupInfo> backups = getBackupsForGame(gameId);
+    if (!backups.isEmpty()) {
+        return backups.first().gameName;
+    }
+    return gameId;
+}
+
 QString SaveManager::getGameBackupDir(const QString &gameId) const
 {
     return m_backupDir + "/games/" + gameId;
@@ -218,6 +483,10 @@ bool SaveManager::compressDirectory(const QString &sourceDir, const QString &arc
 
     QProcess process;
     process.setWorkingDirectory(parentDir);
+
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    env.insert("GZIP", QString("-%1").arg(m_compressionLevel));
+    process.setProcessEnvironment(env);
 
     QStringList args;
     args << "-czf" << archivePath << dirName;
@@ -238,6 +507,10 @@ bool SaveManager::compressFiles(const QString &baseDir, const QStringList &relat
 {
     QProcess process;
     process.setWorkingDirectory(baseDir);
+
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    env.insert("GZIP", QString("-%1").arg(m_compressionLevel));
+    process.setProcessEnvironment(env);
 
     QStringList args;
     args << "-czf" << archivePath;

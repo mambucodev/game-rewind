@@ -35,6 +35,8 @@ set(SOURCES
     src/ui/gameicon.cpp
     src/ui/onboardingdialog.cpp
     src/ui/profiledialog.cpp
+    src/ui/settingsdialog.cpp
+    src/ui/bulkbackupdialog.cpp
 )
 
 set(HEADERS
@@ -57,6 +59,8 @@ set(HEADERS
     src/ui/gameicon.h
     src/ui/onboardingdialog.h
     src/ui/profiledialog.h
+    src/ui/settingsdialog.h
+    src/ui/bulkbackupdialog.h
 )
 
 set(UI_FILES

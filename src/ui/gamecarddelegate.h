@@ -31,6 +31,7 @@ namespace GameCardRoles {
     const int SavePathRole = Qt::UserRole + 6;
     const int PlatformRole = Qt::UserRole + 7;
     const int IsCategoryRole = Qt::UserRole + 8;
+    const int LastBackupRole = Qt::UserRole + 9;
 }
 
 #endif // GAMECARDDELEGATE_H

@@ -1,5 +1,6 @@
 #include "gamecarddelegate.h"
 #include <QApplication>
+#include <QDateTime>
 #include <QPainterPath>
 #include <QStyle>
 
@@ -158,6 +159,42 @@ void GameCardDelegate::paint(QPainter *painter, const QStyleOptionViewItem &opti
             painter->setPen(option.palette.windowText().color());
             painter->drawText(badgeRect, Qt::AlignCenter, platformText);
         }
+
+        // Draw last backup timestamp (right-aligned, same row as platform badge)
+        QDateTime lastBackup = index.data(GameCardRoles::LastBackupRole).toDateTime();
+        QFont lastBackupFont = option.font;
+        lastBackupFont.setPointSize(lastBackupFont.pointSize() - 2);
+        painter->setFont(lastBackupFont);
+
+        QColor lastBackupColor = option.palette.windowText().color();
+        lastBackupColor.setAlphaF(0.45);
+        painter->setPen(lastBackupColor);
+
+        QString lastBackupText;
+        if (!lastBackup.isValid()) {
+            lastBackupText = "Never backed up";
+        } else {
+            qint64 secsAgo = lastBackup.secsTo(QDateTime::currentDateTime());
+            if (secsAgo < 60) {
+                lastBackupText = "Last: just now";
+            } else if (secsAgo < 3600) {
+                lastBackupText = QString("Last: %1 min ago").arg(secsAgo / 60);
+            } else if (secsAgo < 86400) {
+                lastBackupText = QString("Last: %1h ago").arg(secsAgo / 3600);
+            } else if (secsAgo < 604800) {
+                int days = secsAgo / 86400;
+                lastBackupText = QString("Last: %1 day%2 ago").arg(days).arg(days > 1 ? "s" : "");
+            } else {
+                lastBackupText = "Last: " + lastBackup.toString("MMM d");
+            }
+        }
+
+        QFontMetrics lastFm(lastBackupFont);
+        int lastTextWidth = lastFm.horizontalAdvance(lastBackupText);
+        QRect lastBackupRect(textRect.right() - lastTextWidth,
+                             textRect.top() + titleHeight + 32,
+                             lastTextWidth, lastFm.height());
+        painter->drawText(lastBackupRect, Qt::AlignRight | Qt::AlignTop, lastBackupText);
     }
 
     painter->restore();

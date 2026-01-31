@@ -178,6 +178,7 @@
    <addaction name="actionManageConfigs"/>
    <addaction name="actionHiddenGames"/>
    <addaction name="separator"/>
+   <addaction name="actionBackUpAll"/>
    <addaction name="actionRefresh"/>
    <addaction name="separator"/>
    <addaction name="actionSettings"/>
@@ -289,6 +290,17 @@
    </property>
    <property name="toolTip">
     <string>Manage hidden games</string>
+   </property>
+  </action>
+  <action name="actionBackUpAll">
+   <property name="icon">
+    <iconset theme="document-save-all"/>
+   </property>
+   <property name="text">
+    <string>Back Up All</string>
+   </property>
+   <property name="toolTip">
+    <string>Back up multiple games at once</string>
    </property>
   </action>
   <action name="actionAbout">

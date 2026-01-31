@@ -3,6 +3,7 @@
 
 #include <QMainWindow>
 #include <QListWidgetItem>
+#include <QSystemTrayIcon>
 #include "steam/gamedetector.h"
 #include "core/savemanager.h"
 #include "steam/manifestmanager.h"
@@ -10,7 +11,11 @@
 #include "core/gameinfo.h"
 
 class QLabel;
+class QLineEdit;
+class QProgressBar;
 class QStackedWidget;
+class QFileSystemWatcher;
+class QTimer;
 
 QT_BEGIN_NAMESPACE
 namespace Ui { class MainWindow; }
@@ -22,6 +27,9 @@ class MainWindow : public QMainWindow {
 public:
     MainWindow(QWidget *parent = nullptr);
     ~MainWindow();
+
+protected:
+    void closeEvent(QCloseEvent *event) override;
 
 private slots:
     void onGameSelected();
@@ -43,6 +51,14 @@ private slots:
 
     void onManifestReady();
     void onGameContextMenu(const QPoint &pos);
+    void onBackupContextMenu(const QPoint &pos);
+    void onEditBackup();
+    void onBackupUpdated(const QString &gameId, const QString &backupId);
+    void onSearchTextChanged(const QString &text);
+    void onBackUpAll();
+    void onTrayActivated(QSystemTrayIcon::ActivationReason reason);
+    void onSaveDirectoryChanged(const QString &path);
+    void onAutoBackupTimer();
     void onHideGame();
     void onManageHiddenGames();
 
@@ -66,6 +82,11 @@ private:
     BackupInfo getCurrentBackup() const;
 
     void updateStorageUsage();
+    void setOperationInProgress(bool inProgress, const QString &message = QString());
+    void setupTrayIcon();
+    void setupFileWatcher();
+    void updateFileWatcher();
+    void performAutoBackup(const QString &gameId);
 
     QMap<QString, QString> loadSavePathOverrides() const;
     void saveSavePathOverride(const QString &gameId, const QString &path);
@@ -77,10 +98,20 @@ private:
     Database *m_database;
     QString m_currentGameId;
     QLabel *m_storageLabel;
+    QProgressBar *m_progressBar;
+    QLineEdit *m_searchEdit;
     QStackedWidget *m_gamesStack;
     QLabel *m_gamesEmptyLabel;
     QStackedWidget *m_backupsStack;
     QLabel *m_backupsEmptyLabel;
+    QList<GameInfo> m_bulkBackupQueue;
+    void processNextBulkBackup();
+
+    QSystemTrayIcon *m_trayIcon = nullptr;
+    QFileSystemWatcher *m_fileWatcher = nullptr;
+    QTimer *m_autoBackupTimer = nullptr;
+    QMap<QString, QString> m_watchedPathToGameId;
+    QSet<QString> m_pendingAutoBackups;
 };
 
 #endif // MAINWINDOW_H
