@@ -96,10 +96,8 @@ jobs:
           cp /mingw64/bin/libwinpthread-1.dll . 2>/dev/null || true
 
       - name: Package
-        shell: msys2 {0}
-        run: |
-          cd dist
-          7z a ../game-rewind-${{ github.ref_name }}-windows-x86_64.zip .
+        shell: pwsh
+        run: Compress-Archive -Path dist\* -DestinationPath game-rewind-${{ github.ref_name }}-windows-x86_64.zip
 
       - name: Upload to release
         uses: softprops/action-gh-release@v2
