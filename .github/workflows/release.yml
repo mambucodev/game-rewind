@@ -67,6 +67,7 @@ jobs:
             mingw-w64-x86_64-ninja
             mingw-w64-x86_64-gcc
             mingw-w64-x86_64-qt6-base
+            mingw-w64-x86_64-qt6-tools
             mingw-w64-x86_64-yaml-cpp
             mingw-w64-x86_64-libarchive
 
@@ -83,17 +84,30 @@ jobs:
         run: |
           mkdir -p dist
           cp build/game-rewind.exe dist/
-          # Copy Qt and MinGW runtime DLLs
           cd dist
-          windeployqt-qt6 game-rewind.exe || true
-          # Copy additional DLLs that windeployqt may miss
-          for dll in libyaml-cpp.dll libarchive*.dll libzstd.dll liblzma*.dll libbz2*.dll libz*.dll libiconv*.dll liblz4*.dll libexpat*.dll libintl*.dll libb2*.dll libcrypto*.dll; do
+          # Use windeployqt to collect Qt DLLs and plugins
+          windeployqt-qt6 --no-translations game-rewind.exe
+          # Copy Qt DLLs explicitly as safety net
+          for dll in Qt6Core Qt6Gui Qt6Widgets Qt6Network Qt6Sql Qt6Concurrent Qt6DBus; do
+            cp /mingw64/bin/${dll}.dll . 2>/dev/null || true
+          done
+          # Copy Qt plugins
+          mkdir -p platforms sqldrivers styles imageformats
+          cp /mingw64/share/qt6/plugins/platforms/qwindows.dll platforms/ 2>/dev/null || true
+          cp /mingw64/share/qt6/plugins/sqldrivers/qsqlite.dll sqldrivers/ 2>/dev/null || true
+          cp /mingw64/share/qt6/plugins/styles/qmodernwindowsstyle.dll styles/ 2>/dev/null || true
+          cp /mingw64/share/qt6/plugins/imageformats/*.dll imageformats/ 2>/dev/null || true
+          # Copy third-party DLLs
+          for dll in libyaml-cpp.dll libarchive*.dll libzstd.dll liblzma*.dll libbz2*.dll libz*.dll libiconv*.dll liblz4*.dll libexpat*.dll libintl*.dll libb2*.dll libcrypto*.dll libssl*.dll libpcre2-16*.dll libpng16*.dll libharfbuzz*.dll libfreetype*.dll libglib-2.0*.dll libgraphite2.dll libicu*.dll libbrotli*.dll libdouble-conversion*.dll; do
             find /mingw64/bin -name "$dll" -exec cp {} . \; 2>/dev/null || true
           done
           # Copy MinGW C++ runtime
           cp /mingw64/bin/libgcc_s_seh-1.dll . 2>/dev/null || true
           cp /mingw64/bin/libstdc++-6.dll . 2>/dev/null || true
           cp /mingw64/bin/libwinpthread-1.dll . 2>/dev/null || true
+          # List collected files for debugging
+          echo "=== Collected files ==="
+          find . -name "*.dll" | sort
 
       - name: Package
         shell: pwsh
