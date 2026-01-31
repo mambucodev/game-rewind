@@ -1,4 +1,5 @@
 #include "ui/mainwindow.h"
+#include "ui/style.h"
 #include <QApplication>
 #include <QStyleFactory>
 #include <QLocalSocket>
@@ -13,14 +14,17 @@ static void signalHandler(int)
 
 int main(int argc, char *argv[])
 {
+    Q_INIT_RESOURCE(icons);
     QApplication app(argc, argv);
 
+#ifndef Q_OS_WIN
     std::signal(SIGTERM, signalHandler);
+#endif
     std::signal(SIGINT, signalHandler);
 
     app.setApplicationName("Game Rewind");
     app.setOrganizationName("GameRewind");
-    app.setApplicationVersion("0.3.0");
+    app.setApplicationVersion("0.4.0");
 
     // Single-instance check: try to connect to an existing instance
     QLocalSocket socket;
@@ -32,6 +36,8 @@ int main(int argc, char *argv[])
         socket.disconnectFromServer();
         return 0;
     }
+
+    AppStyle::apply();
 
     MainWindow window;
     window.show();

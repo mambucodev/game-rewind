@@ -1,4 +1,5 @@
 #include "onboardingdialog.h"
+#include "style.h"
 #include "gameicon.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -111,7 +112,7 @@ QWidget *OnboardingDialog::createWelcomePage()
     layout->setContentsMargins(40, 20, 40, 20);
 
     QLabel *iconLabel = new QLabel(page);
-    QIcon appIcon = QIcon::fromTheme("document-save", QIcon::fromTheme("applications-games"));
+    QIcon appIcon = AppStyle::icon("document-save");
     iconLabel->setPixmap(appIcon.pixmap(72, 72));
     iconLabel->setAlignment(Qt::AlignCenter);
 
@@ -360,7 +361,7 @@ QWidget *OnboardingDialog::createQuickStartPage()
         row->setSpacing(12);
 
         QLabel *iconLabel = new QLabel(page);
-        iconLabel->setPixmap(QIcon::fromTheme(step.iconName).pixmap(28, 28));
+        iconLabel->setPixmap(AppStyle::icon(step.iconName).pixmap(28, 28));
         iconLabel->setFixedSize(36, 36);
         iconLabel->setAlignment(Qt::AlignCenter);
 
@@ -407,7 +408,7 @@ QWidget *OnboardingDialog::createQuickStartPage()
             "QWidget { background: palette(mid); border-radius: 8px; }");
 
         QLabel *cardIcon = new QLabel(card);
-        cardIcon->setPixmap(QIcon::fromTheme(sc.iconName).pixmap(20, 20));
+        cardIcon->setPixmap(AppStyle::icon(sc.iconName).pixmap(20, 20));
         cardIcon->setAlignment(Qt::AlignCenter);
         cardIcon->setStyleSheet("background: transparent;");
 

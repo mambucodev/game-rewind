@@ -2,7 +2,7 @@
 #define SAVEMANAGER_H
 
 #include <QObject>
-#include <QProcess>
+#include <QFutureWatcher>
 #include <QString>
 #include <QList>
 #include "gameinfo.h"
@@ -17,7 +17,7 @@ public:
     QString getBackupDirectory() const;
     void setCompressionLevel(int level);
 
-    // Synchronous methods (kept for internal use)
+    // Synchronous methods
     bool createBackup(const GameInfo &game, const QString &backupName = QString(),
                       const QString &notes = QString(), const SaveProfile &profile = SaveProfile());
     bool restoreBackup(const BackupInfo &backup, const QString &targetPath);
@@ -49,34 +49,43 @@ signals:
     void error(const QString &message);
 
 private slots:
-    void onProcessFinished(int exitCode, QProcess::ExitStatus exitStatus);
+    void onAsyncBackupFinished();
+    void onAsyncRestoreFinished();
 
 private:
-    enum class PendingOp { None, Backup, Restore };
+    struct AsyncResult {
+        bool success = false;
+        QString errorMessage;
+        BackupInfo backup;
+    };
 
     QString getGameBackupDir(const QString &gameId) const;
     QString generateBackupId() const;
-    bool compressDirectory(const QString &sourceDir, const QString &archivePath);
-    bool compressFiles(const QString &baseDir, const QStringList &relativePaths, const QString &archivePath);
-    bool extractArchive(const QString &archivePath, const QString &targetDir);
+    static bool compressDirectory(const QString &sourceDir, const QString &archivePath, int compressionLevel);
+    static bool compressFiles(const QString &baseDir, const QStringList &relativePaths,
+                              const QString &archivePath, int compressionLevel);
+    static bool extractArchive(const QString &archivePath, const QString &targetDir);
     bool restoreProfileBackup(const BackupInfo &backup, const QString &targetPath);
     bool copyDirectory(const QString &source, const QString &destination);
     bool removeDirectory(const QString &path);
     qint64 getDirectorySize(const QString &path) const;
     bool saveBackupMetadata(const BackupInfo &backup);
     BackupInfo loadBackupMetadata(const QString &metadataPath) const;
+    static void addDirectoryToArchive(struct archive *a, const QString &baseDir,
+                                      const QString &relativePath);
 
     QString m_backupDir;
     int m_compressionLevel = 6;
 
     // Async state
-    QProcess *m_process = nullptr;
-    PendingOp m_pendingOp = PendingOp::None;
+    bool m_busy = false;
+    QFutureWatcher<AsyncResult> m_backupWatcher;
+    QFutureWatcher<AsyncResult> m_restoreWatcher;
     BackupInfo m_pendingBackup;
-    GameInfo m_pendingGame;
     QString m_pendingRestoreTarget;
-    QString m_pendingTempDir;
     bool m_pendingIsProfile = false;
+    QString m_pendingTempDir;
+    std::atomic<bool> m_cancelRequested{false};
 };
 
 #endif // SAVEMANAGER_H

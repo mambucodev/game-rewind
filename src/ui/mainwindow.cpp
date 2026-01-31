@@ -1,5 +1,6 @@
 #include "mainwindow.h"
 #include "ui_mainwindow.h"
+#include "style.h"
 #include "gameconfigdialog.h"
 #include "gameicon.h"
 #include "backupitemdelegate.h"
@@ -273,7 +274,7 @@ void MainWindow::setupEmptyStates()
 
     QLabel *gamesIconLabel = new QLabel(gamesEmptyPage);
     gamesIconLabel->setPixmap(
-        QIcon::fromTheme("applications-games").pixmap(48, 48));
+        AppStyle::icon("applications-games").pixmap(48, 48));
     gamesIconLabel->setAlignment(Qt::AlignCenter);
     gamesIconLabel->setEnabled(false);
 
@@ -305,7 +306,7 @@ void MainWindow::setupEmptyStates()
     m_searchEdit = new QLineEdit(this);
     m_searchEdit->setPlaceholderText("Search games...");
     m_searchEdit->setClearButtonEnabled(true);
-    m_searchEdit->addAction(QIcon::fromTheme("edit-find"), QLineEdit::LeadingPosition);
+    m_searchEdit->addAction(AppStyle::icon("edit-find"), QLineEdit::LeadingPosition);
     leftLayout->insertWidget(1, m_searchEdit);
     connect(m_searchEdit, &QLineEdit::textChanged,
             this, &MainWindow::onSearchTextChanged);
@@ -315,9 +316,9 @@ void MainWindow::setupEmptyStates()
     backupActionsLayout->setContentsMargins(0, 0, 0, 0);
     backupActionsLayout->setSpacing(6);
 
-    m_createBackupBtn = new QPushButton(QIcon::fromTheme("document-save"), "Create Backup", this);
-    m_restoreBackupBtn = new QPushButton(QIcon::fromTheme("document-revert"), "Restore", this);
-    m_deleteBackupBtn = new QPushButton(QIcon::fromTheme("edit-delete"), "Delete", this);
+    m_createBackupBtn = new QPushButton(AppStyle::icon("document-save"), "Create Backup", this);
+    m_restoreBackupBtn = new QPushButton(AppStyle::icon("document-revert"), "Restore", this);
+    m_deleteBackupBtn = new QPushButton(AppStyle::icon("edit-delete"), "Delete", this);
 
     m_createBackupBtn->setEnabled(false);
     m_restoreBackupBtn->setEnabled(false);
@@ -350,7 +351,7 @@ void MainWindow::setupEmptyStates()
 
     QLabel *backupsIconLabel = new QLabel(backupsEmptyPage);
     backupsIconLabel->setPixmap(
-        QIcon::fromTheme("document-save").pixmap(48, 48));
+        AppStyle::icon("document-save").pixmap(48, 48));
     backupsIconLabel->setAlignment(Qt::AlignCenter);
     backupsIconLabel->setEnabled(false);
 
@@ -594,7 +595,7 @@ void MainWindow::populateGameTree(const QList<GameInfo> &games)
     if (!orphanedIds.isEmpty()) {
         QTreeWidgetItem *orphanCategory = new QTreeWidgetItem(ui->gamesTreeWidget);
         orphanCategory->setText(0, "Undetected");
-        orphanCategory->setIcon(0, QIcon::fromTheme("dialog-warning"));
+        orphanCategory->setIcon(0, AppStyle::icon("dialog-warning"));
         orphanCategory->setData(0, GameCardRoles::IsCategoryRole, true);
         orphanCategory->setData(0, Qt::UserRole, QString());
         orphanCategory->setExpanded(true);
@@ -703,7 +704,7 @@ void MainWindow::styleBackupItem(QListWidgetItem *item, const BackupInfo &backup
                               .arg(formatFileSize(backup.size));
 
     item->setText(displayText);
-    item->setIcon(QIcon::fromTheme("document-save"));
+    item->setIcon(AppStyle::icon("document-save"));
     item->setSizeHint(QSize(0, 48)); // Make items taller
 
     // Build rich tooltip with notes if available
@@ -1029,12 +1030,12 @@ void MainWindow::onBackupContextMenu(const QPoint &pos)
     if (!item) return;
 
     QMenu menu(this);
-    QAction *editAction = menu.addAction(QIcon::fromTheme("document-edit"), "Edit Backup...");
+    QAction *editAction = menu.addAction(AppStyle::icon("document-edit"), "Edit Backup...");
     menu.addSeparator();
-    QAction *restoreAction = menu.addAction(QIcon::fromTheme("document-revert"), "Restore");
-    QAction *deleteAction = menu.addAction(QIcon::fromTheme("edit-delete"), "Delete");
+    QAction *restoreAction = menu.addAction(AppStyle::icon("document-revert"), "Restore");
+    QAction *deleteAction = menu.addAction(AppStyle::icon("edit-delete"), "Delete");
     menu.addSeparator();
-    QAction *verifyAction = menu.addAction(QIcon::fromTheme("dialog-ok-apply"), "Verify Integrity");
+    QAction *verifyAction = menu.addAction(AppStyle::icon("dialog-ok-apply"), "Verify Integrity");
 
     QAction *selected = menu.exec(ui->backupsListWidget->viewport()->mapToGlobal(pos));
     if (!selected) return;
@@ -1428,7 +1429,7 @@ void MainWindow::setupTrayIcon()
         return;
     }
 
-    m_trayIcon = new QSystemTrayIcon(QIcon::fromTheme("document-save"), this);
+    m_trayIcon = new QSystemTrayIcon(AppStyle::icon("document-save"), this);
     m_trayIcon->setToolTip("Game Rewind");
 
     QMenu *trayMenu = new QMenu(this);

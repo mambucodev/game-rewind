@@ -43,6 +43,8 @@ public:
     static QStringList getProtonSavePaths(const ManifestGameEntry &entry,
                                           const QString &protonPrefixPath,
                                           const QString &steamLibraryPath);
+    static QStringList getWindowsSavePaths(const ManifestGameEntry &entry,
+                                           const QString &steamLibraryPath);
 
     bool isLoaded() const;
     QMap<int, ManifestGameEntry> getSteamIdIndex() const;
@@ -66,6 +68,9 @@ private:
                                     const ManifestGameEntry &entry,
                                     const QString &protonPrefixPath,
                                     const QString &steamLibraryPath);
+    static QString expandWindowsPath(const QString &path,
+                                     const ManifestGameEntry &entry,
+                                     const QString &steamLibraryPath);
     QString getCachePath() const;
     QString getETagPath() const;
 

@@ -1,12 +1,15 @@
 #include "savemanager.h"
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QDateTime>
 #include <QJsonDocument>
 #include <QJsonObject>
-#include <QProcess>
 #include <QStandardPaths>
 #include <QDebug>
+#include <QtConcurrent>
+#include <archive.h>
+#include <archive_entry.h>
 
 SaveManager::SaveManager(QObject *parent)
     : QObject(parent)
@@ -14,6 +17,11 @@ SaveManager::SaveManager(QObject *parent)
     QString defaultBackupDir = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation)
                                + "/game-rewind";
     setBackupDirectory(defaultBackupDir);
+
+    connect(&m_backupWatcher, &QFutureWatcher<AsyncResult>::finished,
+            this, &SaveManager::onAsyncBackupFinished);
+    connect(&m_restoreWatcher, &QFutureWatcher<AsyncResult>::finished,
+            this, &SaveManager::onAsyncRestoreFinished);
 }
 
 void SaveManager::setBackupDirectory(const QString &dir)
@@ -70,9 +78,9 @@ bool SaveManager::createBackup(const GameInfo &game, const QString &backupName,
 
     bool compressed;
     if (profile.id == -1) {
-        compressed = compressDirectory(game.detectedSavePath, backup.archivePath);
+        compressed = compressDirectory(game.detectedSavePath, backup.archivePath, m_compressionLevel);
     } else {
-        compressed = compressFiles(game.detectedSavePath, profile.files, backup.archivePath);
+        compressed = compressFiles(game.detectedSavePath, profile.files, backup.archivePath, m_compressionLevel);
     }
 
     if (!compressed) {
@@ -230,21 +238,30 @@ bool SaveManager::verifyBackup(const BackupInfo &backup)
         return false;
     }
 
-    QProcess process;
-    QStringList args;
-    args << "-tzf" << backup.archivePath;
+    struct archive *a = archive_read_new();
+    archive_read_support_filter_gzip(a);
+    archive_read_support_format_tar(a);
 
-    process.start("tar", args);
-    process.waitForFinished(30000);
+    bool valid = false;
+    if (archive_read_open_filename(a, backup.archivePath.toLocal8Bit().constData(), 10240) == ARCHIVE_OK) {
+        struct archive_entry *entry;
+        valid = true;
+        while (archive_read_next_header(a, &entry) == ARCHIVE_OK) {
+            archive_read_data_skip(a);
+        }
+        if (archive_errno(a) != 0) {
+            valid = false;
+        }
+    }
 
-    bool valid = (process.exitCode() == 0);
+    archive_read_free(a);
     emit backupVerified(backup.gameId, backup.id, valid);
     return valid;
 }
 
 bool SaveManager::isBusy() const
 {
-    return m_pendingOp != PendingOp::None;
+    return m_busy;
 }
 
 void SaveManager::createBackupAsync(const GameInfo &game, const QString &backupName,
@@ -282,42 +299,55 @@ void SaveManager::createBackupAsync(const GameInfo &game, const QString &backupN
     QString archiveName = m_pendingBackup.id + ".tar.gz";
     m_pendingBackup.archivePath = gameBackupDir + "/" + archiveName;
 
-    m_pendingGame = game;
-    m_pendingOp = PendingOp::Backup;
+    m_busy = true;
+    m_cancelRequested = false;
+    emit operationStarted("Creating backup...");
 
-    m_process = new QProcess(this);
-    connect(m_process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
-            this, &SaveManager::onProcessFinished);
+    QString savePath = game.detectedSavePath;
+    QString archivePath = m_pendingBackup.archivePath;
+    int compressionLevel = m_compressionLevel;
+    QStringList profileFiles = profile.files;
+    int profileId = profile.id;
 
-    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-    env.insert("GZIP", QString("-%1").arg(m_compressionLevel));
-    m_process->setProcessEnvironment(env);
-
-    QStringList args;
-    if (profile.id == -1) {
-        QFileInfo sourceInfo(game.detectedSavePath);
-        m_process->setWorkingDirectory(sourceInfo.absolutePath());
-        args << "-czf" << m_pendingBackup.archivePath << sourceInfo.fileName();
-    } else {
-        m_process->setWorkingDirectory(game.detectedSavePath);
-        args << "-czf" << m_pendingBackup.archivePath;
-        for (const QString &relPath : profile.files) {
-            QString fullPath = game.detectedSavePath + "/" + relPath;
-            if (QFileInfo::exists(fullPath)) {
-                args << relPath;
-            }
+    m_backupWatcher.setFuture(QtConcurrent::run([savePath, archivePath, compressionLevel,
+                                                  profileFiles, profileId]() -> AsyncResult {
+        AsyncResult result;
+        if (profileId == -1) {
+            result.success = compressDirectory(savePath, archivePath, compressionLevel);
+        } else {
+            result.success = compressFiles(savePath, profileFiles, archivePath, compressionLevel);
         }
-        if (args.size() <= 2) {
-            emit error("No profile files found on disk");
-            m_pendingOp = PendingOp::None;
-            delete m_process;
-            m_process = nullptr;
-            return;
+        if (!result.success) {
+            result.errorMessage = "Failed to create backup archive";
         }
+        return result;
+    }));
+}
+
+void SaveManager::onAsyncBackupFinished()
+{
+    AsyncResult result = m_backupWatcher.result();
+    m_busy = false;
+
+    if (m_cancelRequested) {
+        QFile::remove(m_pendingBackup.archivePath);
+        emit operationCancelled();
+        return;
     }
 
-    emit operationStarted("Creating backup...");
-    m_process->start("tar", args);
+    if (!result.success) {
+        QFile::remove(m_pendingBackup.archivePath);
+        emit error(result.errorMessage);
+    } else {
+        m_pendingBackup.size = QFileInfo(m_pendingBackup.archivePath).size();
+        if (saveBackupMetadata(m_pendingBackup)) {
+            emit backupCreated(m_pendingBackup.gameId, m_pendingBackup.id);
+        } else {
+            QFile::remove(m_pendingBackup.archivePath);
+            emit error("Failed to save backup metadata");
+        }
+    }
+    emit operationFinished();
 }
 
 void SaveManager::restoreBackupAsync(const BackupInfo &backup, const QString &targetPath)
@@ -335,108 +365,94 @@ void SaveManager::restoreBackupAsync(const BackupInfo &backup, const QString &ta
     m_pendingBackup = backup;
     m_pendingRestoreTarget = targetPath;
     m_pendingIsProfile = (backup.profileId != -1);
-    m_pendingOp = PendingOp::Restore;
 
-    m_process = new QProcess(this);
-    connect(m_process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
-            this, &SaveManager::onProcessFinished);
+    m_busy = true;
+    m_cancelRequested = false;
+    emit operationStarted("Restoring backup...");
 
-    QStringList args;
     if (m_pendingIsProfile) {
         QDir().mkpath(targetPath);
-        m_process->setWorkingDirectory(targetPath);
-        m_pendingTempDir.clear();
-        args << "-xzf" << backup.archivePath;
+        QString archivePath = backup.archivePath;
+
+        m_restoreWatcher.setFuture(QtConcurrent::run([archivePath, targetPath]() -> AsyncResult {
+            AsyncResult result;
+            result.success = extractArchive(archivePath, targetPath);
+            if (!result.success) {
+                result.errorMessage = "Failed to extract backup archive";
+            }
+            return result;
+        }));
     } else {
         m_pendingTempDir = m_backupDir + "/temp_restore_" + QString::number(QDateTime::currentMSecsSinceEpoch());
         QDir().mkpath(m_pendingTempDir);
-        m_process->setWorkingDirectory(m_pendingTempDir);
-        args << "-xzf" << backup.archivePath;
+        QString archivePath = backup.archivePath;
+        QString tempDir = m_pendingTempDir;
+
+        m_restoreWatcher.setFuture(QtConcurrent::run([archivePath, tempDir]() -> AsyncResult {
+            AsyncResult result;
+            result.success = extractArchive(archivePath, tempDir);
+            if (!result.success) {
+                result.errorMessage = "Failed to extract backup archive";
+            }
+            return result;
+        }));
+    }
+}
+
+void SaveManager::onAsyncRestoreFinished()
+{
+    AsyncResult result = m_restoreWatcher.result();
+    m_busy = false;
+
+    if (m_cancelRequested) {
+        if (!m_pendingTempDir.isEmpty()) {
+            removeDirectory(m_pendingTempDir);
+            m_pendingTempDir.clear();
+        }
+        emit operationCancelled();
+        return;
     }
 
-    emit operationStarted("Restoring backup...");
-    m_process->start("tar", args);
+    if (!result.success) {
+        if (!m_pendingTempDir.isEmpty()) {
+            removeDirectory(m_pendingTempDir);
+            m_pendingTempDir.clear();
+        }
+        emit error(result.errorMessage);
+    } else if (m_pendingIsProfile) {
+        emit backupRestored(m_pendingBackup.gameId, m_pendingBackup.id);
+    } else {
+        // Full restore: move from temp dir to target
+        QString targetPath = m_pendingRestoreTarget;
+        if (QFile::exists(targetPath)) {
+            removeDirectory(targetPath);
+        }
+
+        QDir tempDirObj(m_pendingTempDir);
+        QStringList entries = tempDirObj.entryList(QDir::NoDotAndDotDot | QDir::AllEntries);
+        QString sourceDir = m_pendingTempDir;
+        if (entries.size() == 1) {
+            QFileInfo entryInfo(m_pendingTempDir + "/" + entries.first());
+            if (entryInfo.isDir()) {
+                sourceDir = entryInfo.absoluteFilePath();
+            }
+        }
+
+        if (copyDirectory(sourceDir, targetPath)) {
+            emit backupRestored(m_pendingBackup.gameId, m_pendingBackup.id);
+        } else {
+            emit error("Failed to restore backup to target location");
+        }
+        removeDirectory(m_pendingTempDir);
+        m_pendingTempDir.clear();
+    }
+    emit operationFinished();
 }
 
 void SaveManager::cancelOperation()
 {
-    if (m_process && m_process->state() != QProcess::NotRunning) {
-        m_process->kill();
-        m_process->waitForFinished(3000);
-    }
-    if (m_pendingOp == PendingOp::Backup) {
-        QFile::remove(m_pendingBackup.archivePath);
-    }
-    if (!m_pendingTempDir.isEmpty()) {
-        removeDirectory(m_pendingTempDir);
-        m_pendingTempDir.clear();
-    }
-    m_pendingOp = PendingOp::None;
-    if (m_process) {
-        m_process->deleteLater();
-        m_process = nullptr;
-    }
-    emit operationCancelled();
-}
-
-void SaveManager::onProcessFinished(int exitCode, QProcess::ExitStatus exitStatus)
-{
-    Q_UNUSED(exitStatus);
-
-    if (m_pendingOp == PendingOp::Backup) {
-        if (exitCode != 0) {
-            qWarning() << "tar failed:" << m_process->readAllStandardError();
-            QFile::remove(m_pendingBackup.archivePath);
-            emit error("Failed to create backup archive");
-        } else {
-            m_pendingBackup.size = QFileInfo(m_pendingBackup.archivePath).size();
-            if (saveBackupMetadata(m_pendingBackup)) {
-                emit backupCreated(m_pendingBackup.gameId, m_pendingBackup.id);
-            } else {
-                QFile::remove(m_pendingBackup.archivePath);
-                emit error("Failed to save backup metadata");
-            }
-        }
-    } else if (m_pendingOp == PendingOp::Restore) {
-        if (exitCode != 0) {
-            qWarning() << "tar extraction failed:" << m_process->readAllStandardError();
-            if (!m_pendingTempDir.isEmpty()) {
-                removeDirectory(m_pendingTempDir);
-            }
-            emit error("Failed to extract backup archive");
-        } else if (m_pendingIsProfile) {
-            emit backupRestored(m_pendingBackup.gameId, m_pendingBackup.id);
-        } else {
-            // Full restore: move from temp dir to target
-            QString targetPath = m_pendingRestoreTarget;
-            if (QFile::exists(targetPath)) {
-                removeDirectory(targetPath);
-            }
-
-            QDir tempDirObj(m_pendingTempDir);
-            QStringList entries = tempDirObj.entryList(QDir::NoDotAndDotDot | QDir::AllEntries);
-            QString sourceDir = m_pendingTempDir;
-            if (entries.size() == 1) {
-                QFileInfo entryInfo(m_pendingTempDir + "/" + entries.first());
-                if (entryInfo.isDir()) {
-                    sourceDir = entryInfo.absoluteFilePath();
-                }
-            }
-
-            if (copyDirectory(sourceDir, targetPath)) {
-                emit backupRestored(m_pendingBackup.gameId, m_pendingBackup.id);
-            } else {
-                emit error("Failed to restore backup to target location");
-            }
-            removeDirectory(m_pendingTempDir);
-        }
-        m_pendingTempDir.clear();
-    }
-
-    m_pendingOp = PendingOp::None;
-    m_process->deleteLater();
-    m_process = nullptr;
-    emit operationFinished();
+    m_cancelRequested = true;
+    // The running QtConcurrent task will complete, but we'll discard the result
 }
 
 QStringList SaveManager::getAllGameIdsWithBackups() const
@@ -475,91 +491,175 @@ QString SaveManager::generateBackupId() const
     return QString::number(QDateTime::currentMSecsSinceEpoch());
 }
 
-bool SaveManager::compressDirectory(const QString &sourceDir, const QString &archivePath)
+// --- libarchive-based compression/extraction ---
+
+void SaveManager::addDirectoryToArchive(struct archive *a, const QString &baseDir,
+                                         const QString &relativePath)
+{
+    QDir dir(baseDir + "/" + relativePath);
+    QFileInfoList entries = dir.entryInfoList(QDir::NoDotAndDotDot | QDir::AllEntries | QDir::Hidden,
+                                              QDir::DirsFirst);
+
+    for (const QFileInfo &fi : entries) {
+        QString entryRelPath = relativePath.isEmpty()
+            ? fi.fileName()
+            : relativePath + "/" + fi.fileName();
+
+        if (fi.isDir()) {
+            // Write directory entry
+            struct archive_entry *entry = archive_entry_new();
+            archive_entry_set_pathname(entry, entryRelPath.toUtf8().constData());
+            archive_entry_set_filetype(entry, AE_IFDIR);
+            archive_entry_set_perm(entry, 0755);
+            archive_entry_set_mtime(entry, fi.lastModified().toSecsSinceEpoch(), 0);
+            archive_write_header(a, entry);
+            archive_entry_free(entry);
+
+            addDirectoryToArchive(a, baseDir, entryRelPath);
+        } else if (fi.isFile()) {
+            struct archive_entry *entry = archive_entry_new();
+            archive_entry_set_pathname(entry, entryRelPath.toUtf8().constData());
+            archive_entry_set_filetype(entry, AE_IFREG);
+            archive_entry_set_perm(entry, fi.isExecutable() ? 0755 : 0644);
+            archive_entry_set_size(entry, fi.size());
+            archive_entry_set_mtime(entry, fi.lastModified().toSecsSinceEpoch(), 0);
+            archive_write_header(a, entry);
+
+            QFile file(fi.absoluteFilePath());
+            if (file.open(QIODevice::ReadOnly)) {
+                char buf[8192];
+                qint64 bytesRead;
+                while ((bytesRead = file.read(buf, sizeof(buf))) > 0) {
+                    archive_write_data(a, buf, static_cast<size_t>(bytesRead));
+                }
+            }
+
+            archive_entry_free(entry);
+        } else if (fi.isSymLink()) {
+            struct archive_entry *entry = archive_entry_new();
+            archive_entry_set_pathname(entry, entryRelPath.toUtf8().constData());
+            archive_entry_set_filetype(entry, AE_IFLNK);
+            archive_entry_set_symlink(entry, fi.symLinkTarget().toUtf8().constData());
+            archive_entry_set_perm(entry, 0777);
+            archive_write_header(a, entry);
+            archive_entry_free(entry);
+        }
+    }
+}
+
+bool SaveManager::compressDirectory(const QString &sourceDir, const QString &archivePath,
+                                     int compressionLevel)
 {
     QFileInfo sourceInfo(sourceDir);
-    QString parentDir = sourceInfo.absolutePath();
-    QString dirName = sourceInfo.fileName();
-
-    QProcess process;
-    process.setWorkingDirectory(parentDir);
-
-    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-    env.insert("GZIP", QString("-%1").arg(m_compressionLevel));
-    process.setProcessEnvironment(env);
-
-    QStringList args;
-    args << "-czf" << archivePath << dirName;
-
-    process.start("tar", args);
-    process.waitForFinished(-1);
-
-    if (process.exitCode() != 0) {
-        qWarning() << "tar failed:" << process.readAllStandardError();
+    if (!sourceInfo.exists() || !sourceInfo.isDir()) {
+        qWarning() << "Source directory does not exist:" << sourceDir;
         return false;
     }
 
+    struct archive *a = archive_write_new();
+    archive_write_add_filter_gzip(a);
+    archive_write_set_format_pax_restricted(a);
+
+    // Set compression level
+    QString filterOpts = QString("gzip:compression-level=%1").arg(compressionLevel);
+    archive_write_set_options(a, filterOpts.toUtf8().constData());
+
+    if (archive_write_open_filename(a, archivePath.toLocal8Bit().constData()) != ARCHIVE_OK) {
+        qWarning() << "Failed to open archive for writing:" << archive_error_string(a);
+        archive_write_free(a);
+        return false;
+    }
+
+    // Use the directory name as the top-level entry (like tar does)
+    QString dirName = sourceInfo.fileName();
+    QString parentDir = sourceInfo.absolutePath();
+
+    // Write the top-level directory entry
+    struct archive_entry *dirEntry = archive_entry_new();
+    archive_entry_set_pathname(dirEntry, dirName.toUtf8().constData());
+    archive_entry_set_filetype(dirEntry, AE_IFDIR);
+    archive_entry_set_perm(dirEntry, 0755);
+    archive_entry_set_mtime(dirEntry, sourceInfo.lastModified().toSecsSinceEpoch(), 0);
+    archive_write_header(a, dirEntry);
+    archive_entry_free(dirEntry);
+
+    // Add all contents under the directory name prefix.
+    // We use parentDir as baseDir and dirName as the relative prefix so that
+    // addDirectoryToArchive produces paths like "dirName/subdir/file.txt".
+    addDirectoryToArchive(a, parentDir, dirName);
+
+    archive_write_close(a);
+    archive_write_free(a);
     return true;
 }
 
 bool SaveManager::compressFiles(const QString &baseDir, const QStringList &relativePaths,
-                                const QString &archivePath)
+                                const QString &archivePath, int compressionLevel)
 {
-    QProcess process;
-    process.setWorkingDirectory(baseDir);
+    struct archive *a = archive_write_new();
+    archive_write_add_filter_gzip(a);
+    archive_write_set_format_pax_restricted(a);
 
-    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-    env.insert("GZIP", QString("-%1").arg(m_compressionLevel));
-    process.setProcessEnvironment(env);
+    QString filterOpts = QString("gzip:compression-level=%1").arg(compressionLevel);
+    archive_write_set_options(a, filterOpts.toUtf8().constData());
 
-    QStringList args;
-    args << "-czf" << archivePath;
+    if (archive_write_open_filename(a, archivePath.toLocal8Bit().constData()) != ARCHIVE_OK) {
+        qWarning() << "Failed to open archive for writing:" << archive_error_string(a);
+        archive_write_free(a);
+        return false;
+    }
 
+    int filesAdded = 0;
     for (const QString &relPath : relativePaths) {
         QString fullPath = baseDir + "/" + relPath;
-        if (QFileInfo::exists(fullPath)) {
-            args << relPath;
-        } else {
+        QFileInfo fi(fullPath);
+        if (!fi.exists()) {
             qWarning() << "Profile file not found, skipping:" << fullPath;
+            continue;
+        }
+
+        if (fi.isFile()) {
+            struct archive_entry *entry = archive_entry_new();
+            archive_entry_set_pathname(entry, relPath.toUtf8().constData());
+            archive_entry_set_filetype(entry, AE_IFREG);
+            archive_entry_set_perm(entry, fi.isExecutable() ? 0755 : 0644);
+            archive_entry_set_size(entry, fi.size());
+            archive_entry_set_mtime(entry, fi.lastModified().toSecsSinceEpoch(), 0);
+            archive_write_header(a, entry);
+
+            QFile file(fullPath);
+            if (file.open(QIODevice::ReadOnly)) {
+                char buf[8192];
+                qint64 bytesRead;
+                while ((bytesRead = file.read(buf, sizeof(buf))) > 0) {
+                    archive_write_data(a, buf, static_cast<size_t>(bytesRead));
+                }
+            }
+            archive_entry_free(entry);
+            filesAdded++;
+        } else if (fi.isDir()) {
+            struct archive_entry *entry = archive_entry_new();
+            archive_entry_set_pathname(entry, relPath.toUtf8().constData());
+            archive_entry_set_filetype(entry, AE_IFDIR);
+            archive_entry_set_perm(entry, 0755);
+            archive_entry_set_mtime(entry, fi.lastModified().toSecsSinceEpoch(), 0);
+            archive_write_header(a, entry);
+            archive_entry_free(entry);
+
+            addDirectoryToArchive(a, baseDir, relPath);
+            filesAdded++;
         }
     }
 
-    if (args.size() <= 2) {
+    archive_write_close(a);
+    archive_write_free(a);
+
+    if (filesAdded == 0) {
         qWarning() << "No profile files found on disk";
+        QFile::remove(archivePath);
         return false;
     }
 
-    process.start("tar", args);
-    process.waitForFinished(-1);
-
-    if (process.exitCode() != 0) {
-        qWarning() << "tar failed:" << process.readAllStandardError();
-        return false;
-    }
-
-    return true;
-}
-
-bool SaveManager::restoreProfileBackup(const BackupInfo &backup, const QString &targetPath)
-{
-    QDir().mkpath(targetPath);
-
-    QProcess process;
-    process.setWorkingDirectory(targetPath);
-
-    QStringList args;
-    args << "-xzf" << backup.archivePath;
-
-    process.start("tar", args);
-    process.waitForFinished(-1);
-
-    if (process.exitCode() != 0) {
-        qWarning() << "tar extraction failed:" << process.readAllStandardError();
-        emit error("Failed to restore profile backup");
-        return false;
-    }
-
-    emit backupRestored(backup.gameId, backup.id);
     return true;
 }
 
@@ -567,20 +667,72 @@ bool SaveManager::extractArchive(const QString &archivePath, const QString &targ
 {
     QDir().mkpath(targetDir);
 
-    QProcess process;
-    process.setWorkingDirectory(targetDir);
+    struct archive *a = archive_read_new();
+    archive_read_support_filter_gzip(a);
+    archive_read_support_format_tar(a);
 
-    QStringList args;
-    args << "-xzf" << archivePath;
+    struct archive *ext = archive_write_disk_new();
+    archive_write_disk_set_options(ext, ARCHIVE_EXTRACT_TIME | ARCHIVE_EXTRACT_PERM);
+    archive_write_disk_set_standard_lookup(ext);
 
-    process.start("tar", args);
-    process.waitForFinished(-1);
-
-    if (process.exitCode() != 0) {
-        qWarning() << "tar extraction failed:" << process.readAllStandardError();
+    if (archive_read_open_filename(a, archivePath.toLocal8Bit().constData(), 10240) != ARCHIVE_OK) {
+        qWarning() << "Failed to open archive:" << archive_error_string(a);
+        archive_read_free(a);
+        archive_write_free(ext);
         return false;
     }
 
+    bool success = true;
+    struct archive_entry *entry;
+    while (archive_read_next_header(a, &entry) == ARCHIVE_OK) {
+        // Prepend target directory to entry pathname
+        QString entryPath = targetDir + "/" + QString::fromUtf8(archive_entry_pathname(entry));
+        archive_entry_set_pathname(entry, entryPath.toLocal8Bit().constData());
+
+        int r = archive_write_header(ext, entry);
+        if (r != ARCHIVE_OK) {
+            qWarning() << "Extract header error:" << archive_error_string(ext);
+            success = false;
+            break;
+        }
+
+        if (archive_entry_size(entry) > 0) {
+            const void *buff;
+            size_t size;
+            la_int64_t offset;
+            while (archive_read_data_block(a, &buff, &size, &offset) == ARCHIVE_OK) {
+                if (archive_write_data_block(ext, buff, size, offset) != ARCHIVE_OK) {
+                    qWarning() << "Extract write error:" << archive_error_string(ext);
+                    success = false;
+                    break;
+                }
+            }
+        }
+        archive_write_finish_entry(ext);
+
+        if (!success) break;
+    }
+
+    if (archive_errno(a) != 0) {
+        qWarning() << "Archive read error:" << archive_error_string(a);
+        success = false;
+    }
+
+    archive_read_free(a);
+    archive_write_free(ext);
+    return success;
+}
+
+bool SaveManager::restoreProfileBackup(const BackupInfo &backup, const QString &targetPath)
+{
+    QDir().mkpath(targetPath);
+
+    if (!extractArchive(backup.archivePath, targetPath)) {
+        emit error("Failed to restore profile backup");
+        return false;
+    }
+
+    emit backupRestored(backup.gameId, backup.id);
     return true;
 }
 

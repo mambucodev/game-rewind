@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(game-rewind VERSION 0.3.0 LANGUAGES CXX)
+project(game-rewind VERSION 0.4.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -15,6 +15,7 @@ option(BUILD_TESTS "Build unit tests" OFF)
 # Find Qt6 packages
 find_package(Qt6 REQUIRED COMPONENTS Core Widgets Network Sql Concurrent)
 find_package(yaml-cpp REQUIRED)
+find_package(LibArchive REQUIRED)
 
 # Library sources (everything except main.cpp) -- shared between app and tests
 set(LIB_SOURCES
@@ -39,6 +40,11 @@ set(LIB_SOURCES
     src/ui/profiledialog.cpp
     src/ui/settingsdialog.cpp
     src/ui/bulkbackupdialog.cpp
+    src/ui/style.cpp
+)
+
+set(RESOURCES
+    resources/icons.qrc
 )
 
 set(LIB_HEADERS
@@ -63,6 +69,7 @@ set(LIB_HEADERS
     src/ui/profiledialog.h
     src/ui/settingsdialog.h
     src/ui/bulkbackupdialog.h
+    src/ui/style.h
 )
 
 set(UI_FILES
@@ -74,6 +81,7 @@ add_library(game-rewind-lib STATIC
     ${LIB_SOURCES}
     ${LIB_HEADERS}
     ${UI_FILES}
+    ${RESOURCES}
 )
 
 target_include_directories(game-rewind-lib PUBLIC
@@ -91,6 +99,7 @@ target_link_libraries(game-rewind-lib PUBLIC
     Qt6::Sql
     Qt6::Concurrent
     yaml-cpp::yaml-cpp
+    LibArchive::LibArchive
 )
 
 # Create executable

@@ -7,8 +7,8 @@ on:
     branches: [main]
 
 jobs:
-  build-and-test:
-    name: Build & Test
+  build-and-test-linux:
+    name: Build & Test (Linux)
     runs-on: ubuntu-24.04
 
     steps:
@@ -23,7 +23,8 @@ jobs:
             g++ \
             qt6-base-dev \
             libgl1-mesa-dev \
-            libyaml-cpp-dev
+            libyaml-cpp-dev \
+            libarchive-dev
 
       - name: Configure
         run: cmake -B build -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=ON
@@ -35,6 +36,34 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: cd build && ctest --output-on-failure
+
+  build-windows:
+    name: Build (Windows)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-qt6-base
+            mingw-w64-x86_64-yaml-cpp
+            mingw-w64-x86_64-libarchive
+
+      - name: Configure
+        shell: msys2 {0}
+        run: cmake -B build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        shell: msys2 {0}
+        run: cmake --build build --parallel $(nproc)
 
   static-analysis:
     name: Static Analysis
@@ -50,7 +79,8 @@ jobs:
           sudo apt-get install -y \
             cppcheck \
             qt6-base-dev \
-            libyaml-cpp-dev
+            libyaml-cpp-dev \
+            libarchive-dev
 
       - name: Run cppcheck
         run: |

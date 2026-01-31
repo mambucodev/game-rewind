@@ -434,6 +434,153 @@ QStringList ManifestManager::getProtonSavePaths(const ManifestGameEntry &entry,
     return paths;
 }
 
+QStringList ManifestManager::getWindowsSavePaths(const ManifestGameEntry &entry,
+                                                   const QString &steamLibraryPath)
+{
+    QStringList paths;
+
+    // Linux-only placeholders to skip
+    static const QStringList linuxPlaceholders = {
+        "<xdgData>", "<xdgConfig>"
+    };
+
+    for (const ManifestFileEntry &file : entry.files) {
+        if (!file.tags.contains("save") && !file.tags.contains("config")) {
+            continue;
+        }
+
+        // Skip paths with Linux-only placeholders
+        bool hasLinuxPlaceholder = false;
+        for (const QString &lp : linuxPlaceholders) {
+            if (file.path.contains(lp)) {
+                hasLinuxPlaceholder = true;
+                break;
+            }
+        }
+        if (hasLinuxPlaceholder) {
+            continue;
+        }
+
+        // Check OS constraints: accept entries with os:windows or no OS constraint
+        bool hasOsConstraint = false;
+        bool windowsAllowed = false;
+        for (const FileConstraint &fc : file.when) {
+            if (!fc.os.isEmpty()) {
+                hasOsConstraint = true;
+                if (fc.os == "windows") {
+                    windowsAllowed = true;
+                }
+            }
+        }
+        if (hasOsConstraint && !windowsAllowed) {
+            continue;
+        }
+
+        QString expanded = expandWindowsPath(file.path, entry, steamLibraryPath);
+        if (!expanded.isEmpty()) {
+            while (expanded.contains('*') || expanded.contains('?')) {
+                expanded = QFileInfo(expanded).absolutePath();
+            }
+            if (!paths.contains(expanded)) {
+                paths << expanded;
+            }
+        }
+    }
+
+    return paths;
+}
+
+QString ManifestManager::expandWindowsPath(const QString &path,
+                                            const ManifestGameEntry &entry,
+                                            const QString &steamLibraryPath)
+{
+    QString expanded = path;
+    QString home = QDir::homePath();
+
+    // Windows placeholder mappings using environment variables / QStandardPaths
+    QString appData = qEnvironmentVariable("APPDATA");
+    if (appData.isEmpty()) {
+        appData = home + "/AppData/Roaming";
+    }
+    expanded.replace("<winAppData>", appData);
+
+    QString localAppData = qEnvironmentVariable("LOCALAPPDATA");
+    if (localAppData.isEmpty()) {
+        localAppData = home + "/AppData/Local";
+    }
+    expanded.replace("<winLocalAppData>", localAppData);
+
+    // LocalLow is not in an env var; derive from LOCALAPPDATA
+    QString localAppDataLow = QDir(localAppData).absoluteFilePath("../LocalLow");
+    localAppDataLow = QDir::cleanPath(localAppDataLow);
+    expanded.replace("<winLocalAppDataLow>", localAppDataLow);
+
+    QString documents = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+    if (documents.isEmpty()) {
+        documents = home + "/Documents";
+    }
+    expanded.replace("<winDocuments>", documents);
+
+    QString publicDir = qEnvironmentVariable("PUBLIC");
+    if (publicDir.isEmpty()) {
+        publicDir = "C:/Users/Public";
+    }
+    expanded.replace("<winPublic>", publicDir);
+
+    QString programData = qEnvironmentVariable("ProgramData");
+    if (programData.isEmpty()) {
+        programData = "C:/ProgramData";
+    }
+    expanded.replace("<winProgramData>", programData);
+
+    QString winDir = qEnvironmentVariable("SystemRoot");
+    if (winDir.isEmpty()) {
+        winDir = "C:/Windows";
+    }
+    expanded.replace("<winDir>", winDir);
+
+    expanded.replace("<home>", home);
+    expanded.replace("<osUserName>", qEnvironmentVariable("USERNAME"));
+
+    // Steam-specific placeholders
+    QString steamPath = SteamUtils::findSteamPath();
+
+    if (expanded.contains("<storeUserId>")) {
+        QString userId = SteamUtils::getSteamUserId(steamPath);
+        if (userId.isEmpty()) {
+            return QString();
+        }
+        expanded.replace("<storeUserId>", userId);
+    }
+
+    // Game install directory placeholders
+    QString root = steamLibraryPath.isEmpty()
+                       ? QString()
+                       : steamLibraryPath + "/steamapps/common";
+    QString game = entry.installDirs.isEmpty() ? entry.name : entry.installDirs.first();
+
+    if (expanded.contains("<base>")) {
+        if (root.isEmpty()) {
+            return QString();
+        }
+        expanded.replace("<base>", root + "/" + game);
+    }
+    if (expanded.contains("<root>")) {
+        if (root.isEmpty()) {
+            return QString();
+        }
+        expanded.replace("<root>", root);
+    }
+    expanded.replace("<game>", game);
+
+    // Discard paths with unresolved placeholders
+    if (expanded.contains('<') && expanded.contains('>')) {
+        return QString();
+    }
+
+    return expanded;
+}
+
 QString ManifestManager::expandProtonPath(const QString &path,
                                            const ManifestGameEntry &entry,
                                            const QString &protonPrefixPath,

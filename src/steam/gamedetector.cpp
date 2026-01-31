@@ -181,6 +181,14 @@ QList<GameInfo> GameDetector::detectGamesInThread(DetectionContext ctx)
 
             QStringList allValidPaths;
 
+#ifdef Q_OS_WIN
+            QStringList winPaths = ManifestManager::getWindowsSavePaths(entry, steamGame.libraryPath);
+            for (const QString &path : winPaths) {
+                if (QFileInfo::exists(path) && !allValidPaths.contains(path)) {
+                    allValidPaths.append(path);
+                }
+            }
+#else
             QStringList linuxPaths = ManifestManager::getLinuxSavePaths(entry, steamGame.libraryPath);
             for (const QString &path : linuxPaths) {
                 if (QFileInfo::exists(path) && !allValidPaths.contains(path)) {
@@ -198,6 +206,7 @@ QList<GameInfo> GameDetector::detectGamesInThread(DetectionContext ctx)
                     }
                 }
             }
+#endif
 
             if (allValidPaths.isEmpty()) continue;
 
@@ -259,10 +268,22 @@ QString GameDetector::scanForSavePath(const QString &gameName, const QString &hi
     QStringList commonPaths;
     QString home = QDir::homePath();
 
+#ifdef Q_OS_WIN
+    QString appData = qEnvironmentVariable("APPDATA");
+    if (appData.isEmpty()) appData = home + "/AppData/Roaming";
+    QString localAppData = qEnvironmentVariable("LOCALAPPDATA");
+    if (localAppData.isEmpty()) localAppData = home + "/AppData/Local";
+
+    commonPaths << appData + "/" + gameName
+                << localAppData + "/" + gameName
+                << home + "/Documents/My Games/" + gameName
+                << home + "/Saved Games/" + gameName;
+#else
     commonPaths << home + "/.local/share/" + gameName.toLower()
                 << home + "/.config/" + gameName.toLower()
                 << home + "/Documents/My Games/" + gameName
                 << home + "/.steam/steam/steamapps/compatdata";
+#endif
 
     if (!hint.isEmpty()) {
         QString expandedHint = expandPath(hint);
@@ -368,10 +389,18 @@ void GameDetector::detectManifestGames()
             continue;
         }
 
-        // Collect all existing save paths (both native and Proton)
+        // Collect all existing save paths
         QStringList allValidPaths;
 
-        QStringList linuxPaths = m_manifestManager->getLinuxSavePaths(entry, steamGame.libraryPath);
+#ifdef Q_OS_WIN
+        QStringList winPaths = ManifestManager::getWindowsSavePaths(entry, steamGame.libraryPath);
+        for (const QString &path : winPaths) {
+            if (QFileInfo::exists(path) && !allValidPaths.contains(path)) {
+                allValidPaths.append(path);
+            }
+        }
+#else
+        QStringList linuxPaths = ManifestManager::getLinuxSavePaths(entry, steamGame.libraryPath);
         for (const QString &path : linuxPaths) {
             if (QFileInfo::exists(path) && !allValidPaths.contains(path)) {
                 allValidPaths.append(path);
@@ -380,7 +409,7 @@ void GameDetector::detectManifestGames()
 
         QString protonPrefix = SteamUtils::findProtonPrefix(steamGame.appId, m_steamLibraryFolders);
         if (!protonPrefix.isEmpty()) {
-            QStringList protonPaths = m_manifestManager->getProtonSavePaths(
+            QStringList protonPaths = ManifestManager::getProtonSavePaths(
                 entry, protonPrefix, steamGame.libraryPath);
             for (const QString &path : protonPaths) {
                 if (QFileInfo::exists(path) && !allValidPaths.contains(path)) {
@@ -388,6 +417,7 @@ void GameDetector::detectManifestGames()
                 }
             }
         }
+#endif
 
         if (allValidPaths.isEmpty()) {
             continue;

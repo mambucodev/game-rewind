@@ -1,4 +1,6 @@
 #include "gameicon.h"
+#include "style.h"
+#include "steam/steamutils.h"
 #include <QFile>
 #include <QDir>
 #include <QStandardPaths>
@@ -17,11 +19,13 @@ QIcon GameIconProvider::getIconForGame(const GameInfo &game)
         }
     }
 
-    // Try .desktop files
+#ifdef Q_OS_LINUX
+    // Try .desktop files (Linux only)
     icon = loadFromDesktopFile(game.name);
     if (!icon.isNull()) {
         return icon;
     }
+#endif
 
     // Fall back to platform icon
     return getPlatformIcon(game.platform);
@@ -45,22 +49,36 @@ QPixmap GameIconProvider::getHighResCapsule(const GameInfo &game)
 QIcon GameIconProvider::getPlatformIcon(const QString &platform)
 {
     if (platform == "steam") {
-        return QIcon::fromTheme("steam", QIcon::fromTheme("applications-games"));
+        return AppStyle::icon("steam");
     } else if (platform == "native") {
-        return QIcon::fromTheme("applications-games");
+        return AppStyle::icon("applications-games");
     } else {
-        return QIcon::fromTheme("application-x-executable");
+        return AppStyle::icon("application-x-executable");
     }
+}
+
+static QStringList getSteamSearchPaths()
+{
+    QStringList paths;
+    QString detected = SteamUtils::findSteamPath();
+    if (!detected.isEmpty()) {
+        paths << detected;
+    }
+#ifdef Q_OS_LINUX
+    // Linux fallback paths in case findSteamPath() missed one
+    QString home = QDir::homePath();
+    for (const QString &p : {home + "/.steam/steam", home + "/.local/share/Steam"}) {
+        if (!paths.contains(p)) paths << p;
+    }
+#endif
+    return paths;
 }
 
 QIcon GameIconProvider::loadSteamIcon(const QString &steamAppId, const QString &gameName)
 {
     Q_UNUSED(gameName);
 
-    QStringList steamPaths = {
-        QDir::homePath() + "/.steam/steam",
-        QDir::homePath() + "/.local/share/Steam"
-    };
+    QStringList steamPaths = getSteamSearchPaths();
 
     for (const QString &steamPath : steamPaths) {
         QString appCacheDir = steamPath + "/appcache/librarycache/" + steamAppId + "/";
@@ -113,6 +131,10 @@ QIcon GameIconProvider::loadSteamIcon(const QString &steamAppId, const QString &
 
 QIcon GameIconProvider::loadFromDesktopFile(const QString &gameName)
 {
+#ifndef Q_OS_LINUX
+    Q_UNUSED(gameName);
+    return QIcon();
+#else
     QStringList desktopDirs = {
         QDir::homePath() + "/.local/share/applications",
         "/usr/share/applications",
@@ -138,7 +160,7 @@ QIcon GameIconProvider::loadFromDesktopFile(const QString &gameName)
                             file.close();
 
                             // Try as theme icon first
-                            QIcon icon = QIcon::fromTheme(iconName);
+                            QIcon icon = AppStyle::icon(iconName);
                             if (!icon.isNull()) {
                                 return icon;
                             }
@@ -156,14 +178,12 @@ QIcon GameIconProvider::loadFromDesktopFile(const QString &gameName)
     }
 
     return QIcon();
+#endif
 }
 
 QPixmap GameIconProvider::loadSteamCapsule(const QString &steamAppId)
 {
-    QStringList steamPaths = {
-        QDir::homePath() + "/.steam/steam",
-        QDir::homePath() + "/.local/share/Steam"
-    };
+    QStringList steamPaths = getSteamSearchPaths();
 
     for (const QString &steamPath : steamPaths) {
         QString appCacheDir = steamPath + "/appcache/librarycache/" + steamAppId + "/";

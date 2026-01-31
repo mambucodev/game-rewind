@@ -8,7 +8,7 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  build-linux:
     name: Build Linux Binary
     runs-on: ubuntu-24.04
 
@@ -24,7 +24,8 @@ jobs:
             g++ \
             qt6-base-dev \
             libgl1-mesa-dev \
-            libyaml-cpp-dev
+            libyaml-cpp-dev \
+            libarchive-dev
 
       - name: Configure
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=ON
@@ -47,3 +48,59 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: game-rewind-${{ github.ref_name }}-linux-x86_64.tar.gz
+
+  build-windows:
+    name: Build Windows Binary
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-qt6-base
+            mingw-w64-x86_64-yaml-cpp
+            mingw-w64-x86_64-libarchive
+
+      - name: Configure
+        shell: msys2 {0}
+        run: cmake -B build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        shell: msys2 {0}
+        run: cmake --build build --parallel $(nproc)
+
+      - name: Collect DLLs
+        shell: msys2 {0}
+        run: |
+          mkdir -p dist
+          cp build/game-rewind.exe dist/
+          # Copy Qt and MinGW runtime DLLs
+          cd dist
+          windeployqt-qt6 game-rewind.exe || true
+          # Copy additional DLLs that windeployqt may miss
+          for dll in libyaml-cpp.dll libarchive*.dll libzstd.dll liblzma*.dll libbz2*.dll libz*.dll libiconv*.dll liblz4*.dll libexpat*.dll libintl*.dll libb2*.dll libcrypto*.dll; do
+            find /mingw64/bin -name "$dll" -exec cp {} . \; 2>/dev/null || true
+          done
+          # Copy MinGW C++ runtime
+          cp /mingw64/bin/libgcc_s_seh-1.dll . 2>/dev/null || true
+          cp /mingw64/bin/libstdc++-6.dll . 2>/dev/null || true
+          cp /mingw64/bin/libwinpthread-1.dll . 2>/dev/null || true
+
+      - name: Package
+        shell: msys2 {0}
+        run: |
+          cd dist
+          7z a ../game-rewind-${{ github.ref_name }}-windows-x86_64.zip .
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: game-rewind-${{ github.ref_name }}-windows-x86_64.zip

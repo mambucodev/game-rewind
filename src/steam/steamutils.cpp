@@ -4,15 +4,35 @@
 #include <QFileInfo>
 #include <QTextStream>
 #include <QDebug>
+#ifdef Q_OS_WIN
+#include <QSettings>
+#endif
 
 QString SteamUtils::findSteamPath()
 {
+#ifdef Q_OS_WIN
+    // Check Windows registry
+    for (const QString &key : {"HKEY_LOCAL_MACHINE\\SOFTWARE\\Valve\\Steam",
+                                "HKEY_CURRENT_USER\\SOFTWARE\\Valve\\Steam"}) {
+        QSettings reg(key, QSettings::NativeFormat);
+        QString path = reg.value("InstallPath").toString();
+        if (!path.isEmpty() && QDir(path).exists()) {
+            return path;
+        }
+    }
+    // Fallback paths
+    QStringList possiblePaths = {
+        "C:/Program Files (x86)/Steam",
+        "C:/Program Files/Steam"
+    };
+#else
     QString home = QDir::homePath();
     QStringList possiblePaths = {
         home + "/.steam/steam",
         home + "/.local/share/Steam",
         "/usr/share/steam"
     };
+#endif
 
     for (const QString &path : possiblePaths) {
         if (QDir(path).exists()) {
