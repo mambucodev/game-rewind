@@ -31,19 +31,21 @@ class ManifestManager : public QObject {
 
 public:
     explicit ManifestManager(QObject *parent = nullptr);
+    ~ManifestManager() override;
 
     bool loadCachedManifest();
     void loadCachedManifestAsync();
     void checkForUpdates();
 
     ManifestGameEntry findBySteamId(int steamAppId) const;
-    QStringList getLinuxSavePaths(const ManifestGameEntry &entry,
-                                  const QString &steamLibraryPath) const;
-    QStringList getProtonSavePaths(const ManifestGameEntry &entry,
-                                   const QString &protonPrefixPath,
-                                   const QString &steamLibraryPath) const;
+    static QStringList getLinuxSavePaths(const ManifestGameEntry &entry,
+                                        const QString &steamLibraryPath);
+    static QStringList getProtonSavePaths(const ManifestGameEntry &entry,
+                                          const QString &protonPrefixPath,
+                                          const QString &steamLibraryPath);
 
     bool isLoaded() const;
+    QMap<int, ManifestGameEntry> getSteamIdIndex() const;
 
     bool isParsing() const;
 
@@ -57,13 +59,13 @@ private slots:
 
 private:
     bool parseManifestFile(const QString &filePath);
-    QString expandManifestPath(const QString &path,
-                               const ManifestGameEntry &entry,
-                               const QString &steamLibraryPath) const;
-    QString expandProtonPath(const QString &path,
-                              const ManifestGameEntry &entry,
-                              const QString &protonPrefixPath,
-                              const QString &steamLibraryPath) const;
+    static QString expandManifestPath(const QString &path,
+                                      const ManifestGameEntry &entry,
+                                      const QString &steamLibraryPath);
+    static QString expandProtonPath(const QString &path,
+                                    const ManifestGameEntry &entry,
+                                    const QString &protonPrefixPath,
+                                    const QString &steamLibraryPath);
     QString getCachePath() const;
     QString getETagPath() const;
 

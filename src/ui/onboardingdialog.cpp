@@ -9,6 +9,7 @@
 #include <QScrollArea>
 #include <QFrame>
 #include <QFont>
+#include <QProgressBar>
 #include <QPixmap>
 #include <QPainter>
 #include <QPainterPath>
@@ -34,11 +35,28 @@ OnboardingDialog::OnboardingDialog(const QList<GameInfo> &detectedGames,
                                    QWidget *parent)
     : QDialog(parent)
     , m_detectedGames(detectedGames)
+    , m_loading(detectedGames.isEmpty())
 {
     setWindowTitle("Welcome to Game Rewind");
     setMinimumSize(650, 500);
     resize(720, 560);
     setupUI();
+    if (!m_loading) {
+        populateGamesGrid();
+    }
+}
+
+void OnboardingDialog::setDetectedGames(const QList<GameInfo> &games)
+{
+    m_detectedGames = games;
+    m_loading = false;
+    populateGamesGrid();
+    updateNavigation();
+}
+
+bool OnboardingDialog::isLoading() const
+{
+    return m_loading;
 }
 
 void OnboardingDialog::setupUI()
@@ -49,8 +67,7 @@ void OnboardingDialog::setupUI()
     m_stackedWidget = new QStackedWidget(this);
     m_stackedWidget->addWidget(createWelcomePage());
     m_stackedWidget->addWidget(createGamesPage());
-    m_stackedWidget->addWidget(createToolbarGuidePage());
-    m_stackedWidget->addWidget(createFinishPage());
+    m_stackedWidget->addWidget(createQuickStartPage());
     mainLayout->addWidget(m_stackedWidget, 1);
 
     // Separator
@@ -145,46 +162,83 @@ QWidget *OnboardingDialog::createGamesPage()
     titleLabel->setAlignment(Qt::AlignCenter);
     layout->addWidget(titleLabel);
 
-    QString subtitle = QString("We found <b>%1</b> game%2 with save data on your system.")
-                          .arg(m_detectedGames.size())
-                          .arg(m_detectedGames.size() != 1 ? "s" : "");
-    QLabel *subtitleLabel = new QLabel(subtitle, page);
-    subtitleLabel->setAlignment(Qt::AlignCenter);
-    subtitleLabel->setTextFormat(Qt::RichText);
-    QPalette subPal = subtitleLabel->palette();
+    m_gamesSubtitleLabel = new QLabel(page);
+    m_gamesSubtitleLabel->setAlignment(Qt::AlignCenter);
+    m_gamesSubtitleLabel->setTextFormat(Qt::RichText);
+    QPalette subPal = m_gamesSubtitleLabel->palette();
     QColor subColor = subPal.color(QPalette::WindowText);
     subColor.setAlphaF(0.65);
     subPal.setColor(QPalette::WindowText, subColor);
-    subtitleLabel->setPalette(subPal);
-    layout->addWidget(subtitleLabel);
+    m_gamesSubtitleLabel->setPalette(subPal);
+    layout->addWidget(m_gamesSubtitleLabel);
     layout->addSpacing(8);
 
+    m_gamesPageStack = new QStackedWidget(page);
+
+    // Page 0: Loading state
+    QWidget *loadingPage = new QWidget(this);
+    QVBoxLayout *loadingLayout = new QVBoxLayout(loadingPage);
+    loadingLayout->setAlignment(Qt::AlignCenter);
+
+    QProgressBar *loadingBar = new QProgressBar(loadingPage);
+    loadingBar->setRange(0, 0); // Indeterminate
+    loadingBar->setMaximumWidth(250);
+    loadingBar->setMaximumHeight(16);
+
+    QLabel *loadingLabel = new QLabel("Detecting games...", loadingPage);
+    loadingLabel->setAlignment(Qt::AlignCenter);
+    QPalette loadPal = loadingLabel->palette();
+    QColor loadColor = loadPal.color(QPalette::WindowText);
+    loadColor.setAlphaF(0.5);
+    loadPal.setColor(QPalette::WindowText, loadColor);
+    loadingLabel->setPalette(loadPal);
+
+    loadingLayout->addWidget(loadingBar, 0, Qt::AlignCenter);
+    loadingLayout->addSpacing(8);
+    loadingLayout->addWidget(loadingLabel);
+
+    m_gamesPageStack->addWidget(loadingPage); // index 0
+
+    // Page 1: Games grid (populated later via populateGamesGrid)
+    QWidget *gridPage = new QWidget(this);
+    QVBoxLayout *gridPageLayout = new QVBoxLayout(gridPage);
+    gridPageLayout->setContentsMargins(0, 0, 0, 0);
+
+    m_gamesScrollArea = new QScrollArea(gridPage);
+    m_gamesScrollArea->setWidgetResizable(true);
+    m_gamesScrollArea->setFrameShape(QFrame::NoFrame);
+    m_gamesScrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+
+    m_gamesGridContainer = new QWidget();
+    m_gamesScrollArea->setWidget(m_gamesGridContainer);
+    gridPageLayout->addWidget(m_gamesScrollArea, 1);
+
+    m_gamesPageStack->addWidget(gridPage); // index 1
+
+    // Show loading or grid depending on state
+    m_gamesPageStack->setCurrentIndex(m_loading ? 0 : 1);
+    m_gamesSubtitleLabel->setText(m_loading ? "Scanning your system for games..." : "");
+
+    layout->addWidget(m_gamesPageStack, 1);
+
+    return page;
+}
+
+void OnboardingDialog::populateGamesGrid()
+{
+    // Update subtitle
     if (m_detectedGames.isEmpty()) {
-        QLabel *emptyLabel = new QLabel(
-            "No games detected yet.\n\n"
-            "Use the Add Game button in the toolbar to add games manually.",
-            page);
-        emptyLabel->setAlignment(Qt::AlignCenter);
-        emptyLabel->setWordWrap(true);
-        QPalette pal = emptyLabel->palette();
-        QColor muted = pal.color(QPalette::WindowText);
-        muted.setAlphaF(0.45);
-        pal.setColor(QPalette::WindowText, muted);
-        emptyLabel->setPalette(pal);
-        layout->addStretch();
-        layout->addWidget(emptyLabel);
-        layout->addStretch();
-        return page;
+        m_gamesSubtitleLabel->setText("No games detected. You can add games manually later.");
+    } else {
+        m_gamesSubtitleLabel->setText(
+            QString("We found <b>%1</b> game%2 with save data on your system.")
+                .arg(m_detectedGames.size())
+                .arg(m_detectedGames.size() != 1 ? "s" : ""));
     }
 
-    // Scrollable grid of capsule thumbnails
-    QScrollArea *scrollArea = new QScrollArea(page);
-    scrollArea->setWidgetResizable(true);
-    scrollArea->setFrameShape(QFrame::NoFrame);
-    scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-
-    QWidget *gridContainer = new QWidget();
-    QGridLayout *gridLayout = new QGridLayout(gridContainer);
+    // Replace the grid container contents
+    QWidget *newContainer = new QWidget();
+    QGridLayout *gridLayout = new QGridLayout(newContainer);
     gridLayout->setSpacing(6);
     gridLayout->setContentsMargins(8, 4, 8, 4);
 
@@ -197,7 +251,7 @@ QWidget *OnboardingDialog::createGamesPage()
         const GameInfo &game = m_detectedGames[i];
         QPixmap capsule = GameIconProvider::getHighResCapsule(game);
 
-        QWidget *card = new QWidget(gridContainer);
+        QWidget *card = new QWidget(newContainer);
         QVBoxLayout *cardLayout = new QVBoxLayout(card);
         cardLayout->setContentsMargins(0, 0, 0, 0);
         cardLayout->setSpacing(2);
@@ -212,7 +266,6 @@ QWidget *OnboardingDialog::createGamesPage()
                                             Qt::SmoothTransformation);
             imageLabel->setPixmap(roundedPixmap(scaled, 8));
         } else {
-            // Placeholder with platform icon
             QIcon icon = GameIconProvider::getIconForGame(game);
             QPixmap placeholder(thumbnailWidth, thumbnailHeight);
             placeholder.fill(Qt::transparent);
@@ -248,7 +301,7 @@ QWidget *OnboardingDialog::createGamesPage()
     if (m_detectedGames.size() > maxGames) {
         QLabel *moreLabel = new QLabel(
             QString("+ %1 more").arg(m_detectedGames.size() - maxGames),
-            gridContainer);
+            newContainer);
         moreLabel->setAlignment(Qt::AlignCenter);
         QFont moreFont = moreLabel->font();
         moreFont.setBold(true);
@@ -261,95 +314,70 @@ QWidget *OnboardingDialog::createGamesPage()
         gridLayout->addWidget(moreLabel, (maxGames / columns) + 1, 0, 1, columns);
     }
 
-    scrollArea->setWidget(gridContainer);
-    layout->addWidget(scrollArea, 1);
+    QWidget *oldContainer = m_gamesScrollArea->takeWidget();
+    m_gamesGridContainer = newContainer;
+    m_gamesScrollArea->setWidget(newContainer);
+    delete oldContainer;
 
-    return page;
+    // Switch from loading to grid
+    m_gamesPageStack->setCurrentIndex(1);
 }
 
-QWidget *OnboardingDialog::createToolbarGuidePage()
+QWidget *OnboardingDialog::createQuickStartPage()
 {
     QWidget *page = new QWidget(this);
     QVBoxLayout *layout = new QVBoxLayout(page);
-    layout->setContentsMargins(32, 16, 32, 8);
+    layout->setContentsMargins(40, 16, 40, 20);
 
-    QLabel *titleLabel = new QLabel("How It Works", page);
+    // Title
+    QLabel *titleLabel = new QLabel("Quick Start", page);
     QFont titleFont = titleLabel->font();
     titleFont.setPointSize(16);
     titleFont.setBold(true);
     titleLabel->setFont(titleFont);
     titleLabel->setAlignment(Qt::AlignCenter);
     layout->addWidget(titleLabel);
-    layout->addSpacing(20);
+    layout->addSpacing(16);
 
-    struct GuideEntry {
+    // Three-step workflow
+    struct Step {
         QString iconName;
         QString title;
         QString description;
     };
 
-    QList<GuideEntry> entries = {
-        {"document-save", "Create Backup",
-         "Select a game, press <b>Ctrl+B</b> to back up your saves."},
-        {"document-revert", "Restore",
-         "Select a backup, press <b>Ctrl+R</b> to restore it."},
-        {"edit-delete", "Delete",
-         "Remove old backups with the <b>Delete</b> key."},
-        {"list-add", "Add Game",
-         "Manually add games that weren't auto-detected."},
-        {"view-refresh", "Refresh",
-         "Press <b>F5</b> to re-scan for new games."},
-        {"applications-games", "Hide",
-         "Right-click a game to hide it from the list."},
+    QList<Step> steps = {
+        {"applications-games", "1. Pick a game",
+         "Select a game from the left panel to see its backups."},
+        {"document-save", "2. Create a backup",
+         "Press <b>Ctrl+B</b> or click <b>Create Backup</b> to save your progress."},
+        {"document-revert", "3. Restore anytime",
+         "Select a backup and press <b>Ctrl+R</b> to restore it."},
     };
 
-    for (const GuideEntry &entry : entries) {
+    for (const Step &step : steps) {
         QHBoxLayout *row = new QHBoxLayout();
         row->setSpacing(12);
 
         QLabel *iconLabel = new QLabel(page);
-        QIcon icon = QIcon::fromTheme(entry.iconName);
-        iconLabel->setPixmap(icon.pixmap(22, 22));
-        iconLabel->setFixedSize(28, 28);
+        iconLabel->setPixmap(QIcon::fromTheme(step.iconName).pixmap(28, 28));
+        iconLabel->setFixedSize(36, 36);
         iconLabel->setAlignment(Qt::AlignCenter);
 
         QLabel *textLabel = new QLabel(
-            QString("<b>%1</b> &mdash; %2").arg(entry.title, entry.description), page);
+            QString("<b>%1</b><br>%2").arg(step.title, step.description), page);
         textLabel->setWordWrap(true);
         textLabel->setTextFormat(Qt::RichText);
 
         row->addWidget(iconLabel);
         row->addWidget(textLabel, 1);
         layout->addLayout(row);
-        layout->addSpacing(6);
+        layout->addSpacing(8);
     }
 
-    layout->addStretch();
-    return page;
-}
+    layout->addSpacing(12);
 
-QWidget *OnboardingDialog::createFinishPage()
-{
-    QWidget *page = new QWidget(this);
-    QVBoxLayout *layout = new QVBoxLayout(page);
-    layout->setAlignment(Qt::AlignCenter);
-    layout->setContentsMargins(40, 20, 40, 20);
-
-    QLabel *iconLabel = new QLabel(page);
-    QIcon checkIcon = QIcon::fromTheme("emblem-default",
-                         QIcon::fromTheme("dialog-ok-apply",
-                             QIcon::fromTheme("checkmark")));
-    iconLabel->setPixmap(checkIcon.pixmap(48, 48));
-    iconLabel->setAlignment(Qt::AlignCenter);
-
-    QLabel *titleLabel = new QLabel("You're All Set", page);
-    QFont titleFont = titleLabel->font();
-    titleFont.setPointSize(20);
-    titleFont.setBold(true);
-    titleLabel->setFont(titleFont);
-    titleLabel->setAlignment(Qt::AlignCenter);
-
-    // Quick-reference shortcut cards
+    // Keyboard shortcut cards
     QWidget *shortcutsWidget = new QWidget(page);
     QHBoxLayout *shortcutsLayout = new QHBoxLayout(shortcutsWidget);
     shortcutsLayout->setSpacing(16);
@@ -411,6 +439,10 @@ QWidget *OnboardingDialog::createFinishPage()
         shortcutsLayout->addWidget(card);
     }
 
+    layout->addWidget(shortcutsWidget, 0, Qt::AlignCenter);
+    layout->addSpacing(20);
+
+    // Hint
     QLabel *hintLabel = new QLabel("Pick a game from the left panel to get started.", page);
     hintLabel->setAlignment(Qt::AlignCenter);
     QPalette hintPal = hintLabel->palette();
@@ -418,16 +450,8 @@ QWidget *OnboardingDialog::createFinishPage()
     hintColor.setAlphaF(0.5);
     hintPal.setColor(QPalette::WindowText, hintColor);
     hintLabel->setPalette(hintPal);
-
-    layout->addStretch(2);
-    layout->addWidget(iconLabel);
-    layout->addSpacing(12);
-    layout->addWidget(titleLabel);
-    layout->addSpacing(24);
-    layout->addWidget(shortcutsWidget, 0, Qt::AlignCenter);
-    layout->addSpacing(20);
     layout->addWidget(hintLabel);
-    layout->addStretch(3);
+    layout->addStretch();
 
     return page;
 }
@@ -460,6 +484,11 @@ void OnboardingDialog::updateNavigation()
 
     m_backButton->setEnabled(current > 0);
     m_nextButton->setText(current == last ? "Get Started" : "Next");
+
+    // Block Next on games page (index 1) while still loading
+    bool blocked = (current == 1 && m_loading);
+    m_nextButton->setEnabled(!blocked);
+
     m_pageIndicator->setText(QString("%1 / %2")
                                 .arg(current + 1)
                                 .arg(m_stackedWidget->count()));

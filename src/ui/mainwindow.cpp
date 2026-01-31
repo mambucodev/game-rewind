@@ -39,6 +39,9 @@
 #include <QTimer>
 #include <QCloseEvent>
 #include <QApplication>
+#include <QToolButton>
+#include <QLocalServer>
+#include <QLocalSocket>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -49,6 +52,19 @@ MainWindow::MainWindow(QWidget *parent)
     , m_database(new Database(this))
 {
     ui->setupUi(this);
+
+    // Override specific toolbar buttons to show text (the rest stay icon-only)
+    QList<QAction*> textActions = {
+        ui->actionAddGame, ui->actionScanGame,
+        ui->actionManageConfigs, ui->actionHiddenGames,
+        ui->actionBackUpAll
+    };
+    for (QAction *action : textActions) {
+        QToolButton *btn = qobject_cast<QToolButton*>(ui->toolBar->widgetForAction(action));
+        if (btn) {
+            btn->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        }
+    }
 
     ui->splitter->setSizes(QList<int>() << 300 << 600);
 
@@ -109,14 +125,25 @@ MainWindow::MainWindow(QWidget *parent)
     if (m_manifestManager->isParsing()) {
         ui->statusbar->showMessage("Loading game database...");
     } else {
-        // No cached manifest (first run) -- run detection with custom games only
-        loadGames();
-        updateStorageUsage();
-        showOnboardingIfNeeded();
+        // No cached manifest (first run) -- start async detection
+        loadGamesAsync();
     }
+
+    // Defer onboarding to after the constructor finishes and the window is shown,
+    // so the modal dialog doesn't crash during widget initialization.
+    QTimer::singleShot(0, this, [this]() {
+        showOnboardingIfNeeded();
+    });
 
     setupTrayIcon();
     setupFileWatcher();
+
+    // Single-instance server: listen for activation requests from new instances
+    m_localServer = new QLocalServer(this);
+    QLocalServer::removeServer("game-rewind");
+    m_localServer->listen("game-rewind");
+    connect(m_localServer, &QLocalServer::newConnection,
+            this, &MainWindow::onLocalSocketConnection);
 
     // Check for manifest updates in background
     m_manifestManager->checkForUpdates();
@@ -124,6 +151,11 @@ MainWindow::MainWindow(QWidget *parent)
 
 MainWindow::~MainWindow()
 {
+    // Wait for background threads before Qt destroys child objects,
+    // since the detection thread accesses ManifestManager.
+    if (m_gameDetector->isDetecting()) {
+        m_gameDetector->waitForDetection();
+    }
     delete ui;
 }
 
@@ -134,12 +166,20 @@ void MainWindow::setupConnections()
     connect(ui->backupsListWidget, &QListWidget::currentItemChanged,
             this, &MainWindow::onBackupSelected);
 
-    // Toolbar actions
+    // Toolbar actions (backup actions kept for keyboard shortcuts)
     connect(ui->actionCreateBackup, &QAction::triggered,
             this, &MainWindow::onCreateBackup);
     connect(ui->actionRestoreBackup, &QAction::triggered,
             this, &MainWindow::onRestoreBackup);
     connect(ui->actionDeleteBackup, &QAction::triggered,
+            this, &MainWindow::onDeleteBackup);
+
+    // Backup panel buttons
+    connect(m_createBackupBtn, &QPushButton::clicked,
+            this, &MainWindow::onCreateBackup);
+    connect(m_restoreBackupBtn, &QPushButton::clicked,
+            this, &MainWindow::onRestoreBackup);
+    connect(m_deleteBackupBtn, &QPushButton::clicked,
             this, &MainWindow::onDeleteBackup);
     connect(ui->actionAddGame, &QAction::triggered,
             this, &MainWindow::onAddCustomGame);
@@ -157,6 +197,9 @@ void MainWindow::setupConnections()
             this, &MainWindow::onSettings);
     connect(ui->actionAbout, &QAction::triggered,
             this, &MainWindow::onAbout);
+
+    connect(m_gameDetector, &GameDetector::detectionFinished,
+            this, &MainWindow::onDetectionFinished);
 
     connect(m_saveManager, &SaveManager::backupCreated,
             this, &MainWindow::onBackupCreated);
@@ -235,9 +278,9 @@ void MainWindow::setupEmptyStates()
     gamesIconLabel->setEnabled(false);
 
     m_gamesEmptyLabel = new QLabel(
-        "No games detected\n\n"
-        "Click Add Game in the toolbar to add a game manually,\n"
-        "or press Refresh to re-scan your system.",
+        "No games detected yet\n\n"
+        "Use the Add Game button above to add a game manually,\n"
+        "or press F5 to re-scan your system.",
         gamesEmptyPage);
     m_gamesEmptyLabel->setAlignment(Qt::AlignCenter);
     m_gamesEmptyLabel->setWordWrap(true);
@@ -267,10 +310,36 @@ void MainWindow::setupEmptyStates()
     connect(m_searchEdit, &QLineEdit::textChanged,
             this, &MainWindow::onSearchTextChanged);
 
+    // --- Backup action buttons row ---
+    QHBoxLayout *backupActionsLayout = new QHBoxLayout();
+    backupActionsLayout->setContentsMargins(0, 0, 0, 0);
+    backupActionsLayout->setSpacing(6);
+
+    m_createBackupBtn = new QPushButton(QIcon::fromTheme("document-save"), "Create Backup", this);
+    m_restoreBackupBtn = new QPushButton(QIcon::fromTheme("document-revert"), "Restore", this);
+    m_deleteBackupBtn = new QPushButton(QIcon::fromTheme("edit-delete"), "Delete", this);
+
+    m_createBackupBtn->setEnabled(false);
+    m_restoreBackupBtn->setEnabled(false);
+    m_deleteBackupBtn->setEnabled(false);
+
+    for (QPushButton *btn : {m_createBackupBtn, m_restoreBackupBtn, m_deleteBackupBtn}) {
+        btn->setFlat(true);
+        btn->setCursor(Qt::PointingHandCursor);
+    }
+
+    backupActionsLayout->addWidget(m_createBackupBtn);
+    backupActionsLayout->addWidget(m_restoreBackupBtn);
+    backupActionsLayout->addWidget(m_deleteBackupBtn);
+    backupActionsLayout->addStretch();
+
+    QVBoxLayout *rightLayout = qobject_cast<QVBoxLayout *>(ui->rightPanel->layout());
+    // Insert button row after selectedGameLabel (index 1)
+    rightLayout->insertLayout(2, backupActionsLayout);
+
     // --- Backups panel empty state ---
     m_backupsStack = new QStackedWidget(this);
 
-    QVBoxLayout *rightLayout = qobject_cast<QVBoxLayout *>(ui->rightPanel->layout());
     int listIndex = rightLayout->indexOf(ui->backupsListWidget);
     rightLayout->removeWidget(ui->backupsListWidget);
     m_backupsStack->addWidget(ui->backupsListWidget);  // page 0: list
@@ -312,8 +381,11 @@ void MainWindow::showOnboardingIfNeeded()
         return;
     }
 
-    OnboardingDialog dialog(m_gameDetector->getDetectedGames(), this);
-    dialog.exec();
+    // Pass current games (may be empty if detection is still running)
+    m_onboardingDialog = new OnboardingDialog(m_gameDetector->getDetectedGames(), this);
+    m_onboardingDialog->exec();
+    m_onboardingDialog->deleteLater();
+    m_onboardingDialog = nullptr;
 
     m_database->setSetting("onboarding_completed", "1");
 }
@@ -339,7 +411,7 @@ void MainWindow::updateBackupsEmptyState()
     } else if (ui->backupsListWidget->count() == 0) {
         m_backupsEmptyLabel->setText(
             "No backups yet\n\n"
-            "Click Create Backup in the toolbar or press Ctrl+B\n"
+            "Click Create Backup above or press Ctrl+B\n"
             "to create your first backup.");
         m_backupsStack->setCurrentIndex(1);
     } else {
@@ -378,6 +450,48 @@ void MainWindow::loadGames()
     m_gameDetector->saveCachedGames();
 
     updateFileWatcher();
+}
+
+void MainWindow::loadGamesAsync()
+{
+    if (m_gameDetector->isDetecting()) {
+        return;
+    }
+
+    // Migrate legacy JSON configs if they exist (idempotent)
+    QString legacyConfigDir = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation)
+                              + "/game-rewind/configs";
+    if (QDir(legacyConfigDir).exists()) {
+        m_database->migrateFromJson(legacyConfigDir);
+    }
+
+    m_gameDetector->setHiddenGameIds(m_database->getHiddenGameIds());
+    m_gameDetector->setSavePathOverrides(loadSavePathOverrides());
+    m_gameDetector->loadGamesAsync(m_database);
+
+    ui->statusbar->showMessage("Detecting games...");
+}
+
+void MainWindow::onDetectionFinished()
+{
+    QList<GameInfo> games = m_gameDetector->getDetectedGames();
+
+    QSet<QString> hidden = m_database->getHiddenGameIds();
+    QList<GameInfo> filtered;
+    for (const GameInfo &game : games) {
+        if (!hidden.contains(game.id)) {
+            filtered.append(game);
+        }
+    }
+
+    populateGameTree(filtered);
+    updateStorageUsage();
+    updateFileWatcher();
+
+    // If onboarding dialog is open and waiting for games, feed them in
+    if (m_onboardingDialog && m_onboardingDialog->isLoading()) {
+        m_onboardingDialog->setDetectedGames(games);
+    }
 }
 
 void MainWindow::loadGamesFromCache()
@@ -677,6 +791,7 @@ void MainWindow::onGameSelected()
         m_currentGameId.clear();
         ui->selectedGameLabel->setText("No game selected");
         ui->actionCreateBackup->setEnabled(false);
+        m_createBackupBtn->setEnabled(false);
         ui->backupsListWidget->clear();
         updateBackupsEmptyState();
         return;
@@ -688,6 +803,7 @@ void MainWindow::onGameSelected()
         m_currentGameId.clear();
         ui->selectedGameLabel->setText("Select a game from the list");
         ui->actionCreateBackup->setEnabled(false);
+        m_createBackupBtn->setEnabled(false);
         ui->backupsListWidget->clear();
         updateBackupsEmptyState();
         return;
@@ -700,11 +816,13 @@ void MainWindow::onGameSelected()
         // Orphaned game -- no longer detected
         QTreeWidgetItem *currentItem = ui->gamesTreeWidget->currentItem();
         QString name = currentItem ? currentItem->data(0, GameCardRoles::GameNameRole).toString() : m_currentGameId;
-        ui->selectedGameLabel->setText(QString("Game: %1 (undetected)").arg(name));
+        ui->selectedGameLabel->setText(QString("%1 (undetected)").arg(name));
         ui->actionCreateBackup->setEnabled(false);
+        m_createBackupBtn->setEnabled(false);
     } else {
-        ui->selectedGameLabel->setText(QString("Game: %1").arg(game.name));
+        ui->selectedGameLabel->setText(game.name);
         ui->actionCreateBackup->setEnabled(true);
+        m_createBackupBtn->setEnabled(true);
     }
 
     loadBackupsForGame(m_currentGameId);
@@ -717,6 +835,8 @@ void MainWindow::onBackupSelected(QListWidgetItem *current, QListWidgetItem *pre
     bool hasSelection = (current != nullptr);
     ui->actionRestoreBackup->setEnabled(hasSelection);
     ui->actionDeleteBackup->setEnabled(hasSelection);
+    m_restoreBackupBtn->setEnabled(hasSelection);
+    m_deleteBackupBtn->setEnabled(hasSelection);
 }
 
 void MainWindow::onCreateBackup()
@@ -835,7 +955,7 @@ void MainWindow::onAddCustomGame()
     game.source = "database";
 
     if (m_database->addCustomGame(game)) {
-        loadGames();
+        loadGamesAsync();
         ui->statusbar->showMessage("Game added successfully: " + gameName, 3000);
     } else {
         QMessageBox::warning(this, "Error", "Failed to save game configuration.");
@@ -884,7 +1004,7 @@ void MainWindow::onScanGame()
             game.source = "database";
 
             if (m_database->addCustomGame(game)) {
-                loadGames();
+                loadGamesAsync();
                 ui->statusbar->showMessage("Game added successfully", 3000);
             }
         }
@@ -893,7 +1013,7 @@ void MainWindow::onScanGame()
 
 void MainWindow::onRefreshGames()
 {
-    loadGames();
+    loadGamesAsync();
 }
 
 void MainWindow::onManageConfigs()
@@ -1104,13 +1224,13 @@ void MainWindow::onGameContextMenu(const QPoint &pos)
         dialog.exec();
     } else if (selected == hideAction) {
         m_database->hideGame(gameId, gameName);
-        loadGames();
+        loadGamesAsync();
         ui->statusbar->showMessage(QString("Hidden: %1").arg(gameName), 3000);
     } else if (switchMenu && switchMenu->actions().contains(selected)) {
         // User picked an alternative save path
         QString newPath = selected->text();
         saveSavePathOverride(gameId, newPath);
-        loadGames();
+        loadGamesAsync();
         // Re-select the game so the UI updates
         onGameSelected();
         ui->statusbar->showMessage(QString("Switched save path for %1").arg(gameName), 3000);
@@ -1125,7 +1245,7 @@ void MainWindow::onHideGame()
     }
 
     m_database->hideGame(game.id, game.name);
-    loadGames();
+    loadGamesAsync();
     ui->statusbar->showMessage(QString("Hidden: %1").arg(game.name), 3000);
 }
 
@@ -1178,12 +1298,19 @@ void MainWindow::onManageHiddenGames()
     dialog.exec();
 
     // Refresh game list in case games were unhidden
-    loadGames();
+    loadGamesAsync();
 }
 
 void MainWindow::onSettings()
 {
     SettingsDialog dialog(m_database, this);
+
+    connect(&dialog, &SettingsDialog::onboardingResetRequested, this, [this]() {
+        QTimer::singleShot(0, this, [this]() {
+            showOnboardingIfNeeded();
+        });
+    });
+
     if (dialog.exec() == QDialog::Accepted) {
         QString backupDir = dialog.backupDirectory();
         if (!backupDir.isEmpty()) {
@@ -1246,12 +1373,8 @@ void MainWindow::onError(const QString &message)
 
 void MainWindow::onManifestReady()
 {
-    // Manifest was freshly downloaded or updated - reload games to pick up new entries
-    loadGames();
-    updateStorageUsage();
-
-    // Show onboarding after first manifest load (so the games grid has full data)
-    showOnboardingIfNeeded();
+    // Manifest was freshly downloaded or updated - reload games async to avoid UI freeze
+    loadGamesAsync();
 }
 
 void MainWindow::updateStorageUsage()
@@ -1283,9 +1406,15 @@ void MainWindow::setOperationInProgress(bool inProgress, const QString &message)
 
     GameInfo game = getCurrentGame();
     bool hasGame = !game.id.isEmpty() && game.isDetected && !game.detectedSavePath.isEmpty();
-    ui->actionCreateBackup->setEnabled(!inProgress && hasGame);
-    ui->actionRestoreBackup->setEnabled(!inProgress && ui->backupsListWidget->currentItem());
-    ui->actionDeleteBackup->setEnabled(!inProgress && ui->backupsListWidget->currentItem());
+    bool canCreate = !inProgress && hasGame;
+    bool canRestore = !inProgress && ui->backupsListWidget->currentItem();
+    bool canDelete = !inProgress && ui->backupsListWidget->currentItem();
+    ui->actionCreateBackup->setEnabled(canCreate);
+    ui->actionRestoreBackup->setEnabled(canRestore);
+    ui->actionDeleteBackup->setEnabled(canDelete);
+    m_createBackupBtn->setEnabled(canCreate);
+    m_restoreBackupBtn->setEnabled(canRestore);
+    m_deleteBackupBtn->setEnabled(canDelete);
 
     if (inProgress && !message.isEmpty()) {
         ui->statusbar->showMessage(message);
@@ -1371,6 +1500,18 @@ void MainWindow::onTrayActivated(QSystemTrayIcon::ActivationReason reason)
             activateWindow();
         }
     }
+}
+
+void MainWindow::onLocalSocketConnection()
+{
+    QLocalSocket *socket = m_localServer->nextPendingConnection();
+    if (socket) {
+        socket->waitForReadyRead(500);
+        socket->deleteLater();
+    }
+    show();
+    raise();
+    activateWindow();
 }
 
 void MainWindow::onSaveDirectoryChanged(const QString &path)

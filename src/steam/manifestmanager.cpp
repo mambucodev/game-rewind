@@ -23,6 +23,13 @@ ManifestManager::ManifestManager(QObject *parent)
             this, &ManifestManager::onAsyncParseFinished);
 }
 
+ManifestManager::~ManifestManager()
+{
+    if (m_parsing) {
+        m_parseWatcher.waitForFinished();
+    }
+}
+
 bool ManifestManager::loadCachedManifest()
 {
     QString cachePath = getCachePath();
@@ -255,7 +262,7 @@ ManifestGameEntry ManifestManager::findBySteamId(int steamAppId) const
 }
 
 QStringList ManifestManager::getLinuxSavePaths(const ManifestGameEntry &entry,
-                                                const QString &steamLibraryPath) const
+                                                const QString &steamLibraryPath)
 {
     QStringList paths;
 
@@ -326,7 +333,7 @@ QStringList ManifestManager::getLinuxSavePaths(const ManifestGameEntry &entry,
 
 QString ManifestManager::expandManifestPath(const QString &path,
                                              const ManifestGameEntry &entry,
-                                             const QString &steamLibraryPath) const
+                                             const QString &steamLibraryPath)
 {
     QString expanded = path;
     QString home = QDir::homePath();
@@ -385,7 +392,7 @@ QString ManifestManager::expandManifestPath(const QString &path,
 
 QStringList ManifestManager::getProtonSavePaths(const ManifestGameEntry &entry,
                                                  const QString &protonPrefixPath,
-                                                 const QString &steamLibraryPath) const
+                                                 const QString &steamLibraryPath)
 {
     QStringList paths;
 
@@ -430,7 +437,7 @@ QStringList ManifestManager::getProtonSavePaths(const ManifestGameEntry &entry,
 QString ManifestManager::expandProtonPath(const QString &path,
                                            const ManifestGameEntry &entry,
                                            const QString &protonPrefixPath,
-                                           const QString &steamLibraryPath) const
+                                           const QString &steamLibraryPath)
 {
     QString expanded = path;
     QString protonHome = protonPrefixPath + "/drive_c/users/steamuser";
@@ -482,6 +489,11 @@ QString ManifestManager::expandProtonPath(const QString &path,
 bool ManifestManager::isLoaded() const
 {
     return m_loaded;
+}
+
+QMap<int, ManifestGameEntry> ManifestManager::getSteamIdIndex() const
+{
+    return m_steamIdIndex;
 }
 
 QString ManifestManager::getCachePath() const

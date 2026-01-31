@@ -132,12 +132,16 @@ void SettingsDialog::onResetOnboarding()
 {
     m_database->setSetting("onboarding_completed", "0");
     QMessageBox::information(this, "Onboarding Reset",
-        "The onboarding wizard will be shown next time you start Game Rewind.");
+        "The onboarding wizard will appear after you close Settings.");
+    m_onboardingReset = true;
 }
 
 void SettingsDialog::onAccept()
 {
     saveSettings();
+    if (m_onboardingReset) {
+        emit onboardingResetRequested();
+    }
     accept();
 }
 

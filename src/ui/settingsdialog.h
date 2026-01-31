@@ -22,6 +22,9 @@ public:
     bool autoBackupEnabled() const;
     int autoBackupIntervalSeconds() const;
 
+signals:
+    void onboardingResetRequested();
+
 private slots:
     void onBrowseBackupDir();
     void onResetOnboarding();
@@ -32,6 +35,7 @@ private:
     void saveSettings();
 
     Database *m_database;
+    bool m_onboardingReset = false;
     QLineEdit *m_backupDirEdit;
     QComboBox *m_compressionCombo;
     QCheckBox *m_minimizeToTrayCheck;

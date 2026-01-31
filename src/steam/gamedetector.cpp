@@ -10,12 +10,23 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QDebug>
+#include <QtConcurrent>
 
 GameDetector::GameDetector(QObject *parent)
     : QObject(parent)
 {
     m_steamPath = SteamUtils::findSteamPath();
     m_steamLibraryFolders = SteamUtils::getLibraryFolders(m_steamPath);
+
+    connect(&m_detectWatcher, &QFutureWatcher<QList<GameInfo>>::finished,
+            this, &GameDetector::onAsyncDetectionFinished);
+}
+
+GameDetector::~GameDetector()
+{
+    if (m_detecting) {
+        m_detectWatcher.waitForFinished();
+    }
 }
 
 void GameDetector::setManifestManager(ManifestManager *manager)
@@ -51,6 +62,181 @@ void GameDetector::loadCustomGames(Database *db)
     qDebug() << "Loaded" << m_games.size() << "custom games from database";
 
     detectGames();
+}
+
+void GameDetector::loadGamesAsync(Database *db)
+{
+    if (m_detecting) {
+        return;
+    }
+
+    m_games.clear();
+    m_detectedGames.clear();
+    m_customSteamIds.clear();
+
+    QList<GameInfo> customGames = db->getAllCustomGames();
+    for (const GameInfo &game : customGames) {
+        if (!game.steamAppId.isEmpty()) {
+            m_customSteamIds.insert(game.steamAppId);
+        }
+        m_games.append(game);
+    }
+
+    m_detecting = true;
+
+    DetectionContext ctx;
+    ctx.games = m_games;
+    ctx.customSteamIds = m_customSteamIds;
+    ctx.hiddenGames = m_hiddenGames;
+    ctx.savePathOverrides = m_savePathOverrides;
+    ctx.steamPath = m_steamPath;
+    ctx.steamLibraryFolders = m_steamLibraryFolders;
+    if (m_manifestManager && m_manifestManager->isLoaded()) {
+        ctx.manifestLoaded = true;
+        ctx.steamIdIndex = m_manifestManager->getSteamIdIndex();
+    }
+
+    m_detectWatcher.setFuture(QtConcurrent::run(&GameDetector::detectGamesInThread, ctx));
+}
+
+bool GameDetector::isDetecting() const
+{
+    return m_detecting;
+}
+
+void GameDetector::waitForDetection()
+{
+    if (m_detecting) {
+        m_detectWatcher.waitForFinished();
+    }
+}
+
+QList<GameInfo> GameDetector::detectGamesInThread(DetectionContext ctx)
+{
+    QList<GameInfo> detected;
+
+    // Phase 1: Custom games
+    for (const GameInfo &game : ctx.games) {
+        if (ctx.hiddenGames.contains(game.id)) {
+            continue;
+        }
+
+        GameInfo det = game;
+        det.isDetected = false;
+
+        for (const QString &savePath : game.savePaths) {
+            QString expanded = savePath;
+            if (expanded.startsWith("~")) {
+                expanded.replace(0, 1, QDir::homePath());
+            }
+            expanded.replace("$HOME", QDir::homePath());
+            if (!ctx.steamPath.isEmpty()) {
+                expanded.replace("$STEAM", ctx.steamPath);
+            }
+
+            if (QFileInfo(expanded).exists()) {
+                det.detectedSavePath = expanded;
+                det.isDetected = true;
+                break;
+            }
+        }
+
+        if (det.isDetected) {
+            // Check installed (simplified inline)
+            bool installed = true;
+            if (det.platform == "steam" && !det.steamAppId.isEmpty()) {
+                if (ctx.steamPath.isEmpty()) {
+                    installed = false;
+                } else {
+                    installed = false;
+                    for (const QString &lib : ctx.steamLibraryFolders) {
+                        if (QFile::exists(lib + "/steamapps/appmanifest_" + det.steamAppId + ".acf")) {
+                            installed = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (installed) {
+                detected.append(det);
+            }
+        }
+    }
+
+    qDebug() << "Async Phase 1: Detected" << detected.size() << "custom games";
+
+    // Phase 2: Manifest games
+    if (ctx.manifestLoaded) {
+        QList<SteamAppInfo> installedGames = SteamUtils::scanInstalledGames(ctx.steamLibraryFolders);
+
+        for (const SteamAppInfo &steamGame : installedGames) {
+            if (ctx.customSteamIds.contains(steamGame.appId)) continue;
+            if (ctx.hiddenGames.contains("steam_" + steamGame.appId)) continue;
+
+            int appId = steamGame.appId.toInt();
+            if (appId <= 0) continue;
+
+            ManifestGameEntry entry = ctx.steamIdIndex.value(appId);
+            if (entry.name.isEmpty()) continue;
+
+            QStringList allValidPaths;
+
+            QStringList linuxPaths = ManifestManager::getLinuxSavePaths(entry, steamGame.libraryPath);
+            for (const QString &path : linuxPaths) {
+                if (QFileInfo::exists(path) && !allValidPaths.contains(path)) {
+                    allValidPaths.append(path);
+                }
+            }
+
+            QString protonPrefix = SteamUtils::findProtonPrefix(steamGame.appId, ctx.steamLibraryFolders);
+            if (!protonPrefix.isEmpty()) {
+                QStringList protonPaths = ManifestManager::getProtonSavePaths(
+                    entry, protonPrefix, steamGame.libraryPath);
+                for (const QString &path : protonPaths) {
+                    if (QFileInfo::exists(path) && !allValidPaths.contains(path)) {
+                        allValidPaths.append(path);
+                    }
+                }
+            }
+
+            if (allValidPaths.isEmpty()) continue;
+
+            GameInfo game;
+            game.id = "steam_" + steamGame.appId;
+            game.name = steamGame.name;
+            game.platform = "steam";
+            game.steamAppId = steamGame.appId;
+            game.source = "manifest";
+            game.isDetected = true;
+
+            QString overridePath = ctx.savePathOverrides.value(game.id);
+            if (!overridePath.isEmpty() && allValidPaths.contains(overridePath)) {
+                game.detectedSavePath = overridePath;
+            } else {
+                game.detectedSavePath = allValidPaths.first();
+            }
+
+            for (const QString &p : allValidPaths) {
+                if (p != game.detectedSavePath) {
+                    game.alternativeSavePaths.append(p);
+                }
+            }
+
+            detected.append(game);
+        }
+    }
+
+    qDebug() << "Async detection total:" << detected.size() << "games";
+    return detected;
+}
+
+void GameDetector::onAsyncDetectionFinished()
+{
+    m_detecting = false;
+    m_detectedGames = m_detectWatcher.result();
+    saveCachedGames();
+    qDebug() << "Async detection finished:" << m_detectedGames.size() << "games";
+    emit detectionFinished();
 }
 
 QList<GameInfo> GameDetector::getDetectedGames() const

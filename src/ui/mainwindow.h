@@ -12,10 +12,14 @@
 
 class QLabel;
 class QLineEdit;
+class QPushButton;
 class QProgressBar;
 class QStackedWidget;
 class QFileSystemWatcher;
 class QTimer;
+class QToolButton;
+class QLocalServer;
+class OnboardingDialog;
 
 QT_BEGIN_NAMESPACE
 namespace Ui { class MainWindow; }
@@ -61,6 +65,8 @@ private slots:
     void onAutoBackupTimer();
     void onHideGame();
     void onManageHiddenGames();
+    void onDetectionFinished();
+    void onLocalSocketConnection();
 
 private:
     void setupConnections();
@@ -70,6 +76,7 @@ private:
     void updateGamesEmptyState();
     void updateBackupsEmptyState();
     void loadGames();
+    void loadGamesAsync();
     void loadGamesFromCache();
     void populateGameTree(const QList<GameInfo> &games);
     void loadBackupsForGame(const QString &gameId);
@@ -107,6 +114,14 @@ private:
     QList<GameInfo> m_bulkBackupQueue;
     void processNextBulkBackup();
 
+    OnboardingDialog *m_onboardingDialog = nullptr;
+
+    // Backup panel action buttons
+    QPushButton *m_createBackupBtn = nullptr;
+    QPushButton *m_restoreBackupBtn = nullptr;
+    QPushButton *m_deleteBackupBtn = nullptr;
+
+    QLocalServer *m_localServer = nullptr;
     QSystemTrayIcon *m_trayIcon = nullptr;
     QFileSystemWatcher *m_fileWatcher = nullptr;
     QTimer *m_autoBackupTimer = nullptr;

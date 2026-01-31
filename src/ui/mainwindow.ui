@@ -55,7 +55,7 @@
         <item>
          <widget class="QLabel" name="gamesLabel">
           <property name="text">
-           <string>Detected Games</string>
+           <string>Your Games</string>
           </property>
           <property name="font">
            <font>
@@ -161,7 +161,7 @@
     </size>
    </property>
    <property name="toolButtonStyle">
-    <enum>Qt::ToolButtonTextBesideIcon</enum>
+    <enum>Qt::ToolButtonIconOnly</enum>
    </property>
    <attribute name="toolBarArea">
     <enum>TopToolBarArea</enum>
@@ -169,10 +169,6 @@
    <attribute name="toolBarBreak">
     <bool>false</bool>
    </attribute>
-   <addaction name="actionCreateBackup"/>
-   <addaction name="actionRestoreBackup"/>
-   <addaction name="actionDeleteBackup"/>
-   <addaction name="separator"/>
    <addaction name="actionAddGame"/>
    <addaction name="actionScanGame"/>
    <addaction name="actionManageConfigs"/>
@@ -278,7 +274,7 @@
     <string>Settings</string>
    </property>
    <property name="toolTip">
-    <string>View application settings</string>
+    <string>Settings</string>
    </property>
   </action>
   <action name="actionHiddenGames">
