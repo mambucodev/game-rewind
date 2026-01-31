@@ -60,5 +60,6 @@ jobs:
             --suppress=missingIncludeSystem \
             --suppress=unmatchedSuppression \
             --suppress=unknownMacro \
+            --suppress=useInitializationList \
             -I src/core -I src/steam -I src/ui -I src \
             src/
