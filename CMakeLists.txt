@@ -9,13 +9,14 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
+option(BUILD_TESTS "Build unit tests" OFF)
+
 # Find Qt6 packages
 find_package(Qt6 REQUIRED COMPONENTS Core Widgets Network Sql Concurrent)
 find_package(yaml-cpp REQUIRED)
 
-# Source files
-set(SOURCES
-    src/main.cpp
+# Library sources (everything except main.cpp) -- shared between app and tests
+set(LIB_SOURCES
     # Core
     src/core/gameinfo.cpp
     src/core/database.cpp
@@ -39,7 +40,7 @@ set(SOURCES
     src/ui/bulkbackupdialog.cpp
 )
 
-set(HEADERS
+set(LIB_HEADERS
     # Core
     src/core/gameinfo.h
     src/core/database.h
@@ -67,15 +68,14 @@ set(UI_FILES
     src/ui/mainwindow.ui
 )
 
-# Create executable
-add_executable(${PROJECT_NAME}
-    ${SOURCES}
-    ${HEADERS}
+# Static library for linking into both the app and tests
+add_library(game-rewind-lib STATIC
+    ${LIB_SOURCES}
+    ${LIB_HEADERS}
     ${UI_FILES}
 )
 
-# Include directories so headers can find each other across subdirectories
-target_include_directories(${PROJECT_NAME} PRIVATE
+target_include_directories(game-rewind-lib PUBLIC
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/src/core
     ${CMAKE_SOURCE_DIR}/src/steam
@@ -83,8 +83,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_BINARY_DIR}
 )
 
-# Link libraries
-target_link_libraries(${PROJECT_NAME}
+target_link_libraries(game-rewind-lib PUBLIC
     Qt6::Core
     Qt6::Widgets
     Qt6::Network
@@ -93,7 +92,20 @@ target_link_libraries(${PROJECT_NAME}
     yaml-cpp::yaml-cpp
 )
 
+# Create executable
+add_executable(${PROJECT_NAME}
+    src/main.cpp
+)
+
+target_link_libraries(${PROJECT_NAME} PRIVATE game-rewind-lib)
+
 # Installation
 install(TARGETS ${PROJECT_NAME}
     RUNTIME DESTINATION bin
 )
+
+# Tests
+if(BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
