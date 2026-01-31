@@ -67,7 +67,6 @@ jobs:
             mingw-w64-x86_64-ninja
             mingw-w64-x86_64-gcc
             mingw-w64-x86_64-qt6-base
-            mingw-w64-x86_64-qt6-tools
             mingw-w64-x86_64-yaml-cpp
             mingw-w64-x86_64-libarchive
 
@@ -85,9 +84,7 @@ jobs:
           mkdir -p dist
           cp build/game-rewind.exe dist/
           cd dist
-          # Use windeployqt to collect Qt DLLs and plugins
-          windeployqt-qt6 --no-translations game-rewind.exe
-          # Copy Qt DLLs explicitly as safety net
+          # Copy Qt DLLs
           for dll in Qt6Core Qt6Gui Qt6Widgets Qt6Network Qt6Sql Qt6Concurrent Qt6DBus; do
             cp /mingw64/bin/${dll}.dll . 2>/dev/null || true
           done
